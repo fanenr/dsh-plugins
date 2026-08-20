@@ -1,0 +1,3 @@
+- insert:
+  - id: subagent-default-model
+    name: dsh-subagent-default-model
