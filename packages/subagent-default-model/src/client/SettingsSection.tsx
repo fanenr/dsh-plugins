@@ -1,34 +1,19 @@
-import { useEffect, useMemo, useState, type ReactElement } from 'react'
-import type { PropsLocale, PropsRuntime, InjectFace } from '@deepseek-ai/dsh-client-ui-slots'
-import type {
-  ConnectionHandle,
-  ModelCatalogFailure,
-  ModelProviderGroup,
-  ModelReasoningEffort,
-  SettingsNamespaceView,
-} from '@deepseek-ai/dsh-api-remotes/client'
+import {
+  useCallback, useEffect, useMemo, useRef, useSyncExternalStore, useState, type ReactElement,
+} from 'react'
+import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
+import type { ModelCatalog, ModelProviderGroup } from '@deepseek-ai/dsh-api-session-controller/types'
 import { IconChevronDownOutline14, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import { NS } from './locales.ts'
+import type { SubagentDefaultModelSettings } from './index.ts'
 
-/** One model inside a provider group (derived from the wire catalog type). */
-type CatalogModel = ModelProviderGroup['models'][number]
-
-/** The llm.models catalog response value. */
-interface ModelCatalog {
-  groups: ModelProviderGroup[]
-  failures: ModelCatalogFailure[]
-}
-
-/** Injected business face: connection plus the namespace write verb. */
+/** Injected business face: the bound settings scope plus the catalog loader. */
 export interface SubagentModelInjected {
-  connection: ConnectionHandle
-  saveSelection: (
-    provider: string,
-    model: string,
-    reasoningEffort?: string,
-    expectedRevision?: number,
-  ) => Promise<SettingsNamespaceView>
-  subscribeSettingsUpdates: (listener: (ns: string, revision: number) => void) => () => void
+  scope: SettingsScope<SubagentDefaultModelSettings>
+  loadCatalog: () => Promise<ModelCatalog>
 }
 
 /** Card props: owner share is empty for plugin cards. */
@@ -37,143 +22,212 @@ export type SubagentModelCardProps =
   & InjectFace<SubagentModelInjected>
   & PropsLocale<typeof NS>
 
-interface Snapshot {
-  provider?: string
-  model?: string
-  reasoningEffort?: string
-  /** Settings namespace revision at load; fences the next write. */
-  revision?: number
-  catalog?: ModelCatalog
-  status: 'loading' | 'ready' | 'error'
-  error?: string
+type CatalogState =
+  | { status: 'loading' }
+  | { status: 'ready'; catalog: ModelCatalog }
+  | { status: 'error'; message: string }
+
+/** The empty-string menu id meaning "built-in". */
+const BUILTIN_ID = ''
+
+/** One flat model-menu row id: provider and model joined opaquely. */
+function routeIdOf(provider: string, model: string): string {
+  return `${provider}\0${model}`
 }
 
-/** Minimal settings describe wire shape used here. */
-interface SettingsView {
-  ns: string
-  revision: number
-  value: { provider?: string; model?: string; reasoningEffort?: string }
+/** Resolve the effective route key of a stored section ('' when built-in). */
+function routeIdOfSettings(value: SubagentDefaultModelSettings | undefined): string {
+  const provider = value?.provider
+  const model = value?.model
+  if (provider === undefined || model === undefined || provider === '' || model === '') return BUILTIN_ID
+  return routeIdOf(provider, model)
 }
 
-/** Load the model catalog plus the current namespace value. */
-async function loadSnapshot(connection: ConnectionHandle): Promise<Snapshot> {
-  const [modelsResponse, settingsResponse] = await Promise.all([
-    connection.api.llm.models({}),
-    connection.api.settings.describe({}),
-  ])
-  if (!modelsResponse.result.ok) throw new Error(modelsResponse.result.error.message)
-  const catalog = modelsResponse.result.value as ModelCatalog
-  let provider: string | undefined
-  let model: string | undefined
-  let reasoningEffort: string | undefined
-  let revision: number | undefined
-  if (settingsResponse.result.ok) {
-    const view = (settingsResponse.result.value as { namespaces: SettingsView[] }).namespaces
-      .find(candidate => candidate.ns === 'subagent-default-model')
-    provider = view?.value?.provider
-    model = view?.value?.model
-    reasoningEffort = view?.value?.reasoningEffort
-    revision = view?.revision
-  }
-  return {
-    ...(provider === undefined ? {} : { provider }),
-    ...(model === undefined ? {} : { model }),
-    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-    ...(revision === undefined ? {} : { revision }),
-    catalog,
-    status: 'ready',
-  }
+/** One model row label: `Provider · model`. */
+function modelRowLabel(groups: readonly ModelProviderGroup[], provider: string, model: string): string {
+  const group = groups.find(candidate => candidate.id === provider)
+  const entry = group?.models.find(candidate => candidate.id === model)
+  return `${group?.name ?? provider} · ${entry?.name ?? model}`
 }
 
-export function SubagentModelCard({ t, connection, saveSelection, subscribeSettingsUpdates }: SubagentModelCardProps): ReactElement | null {
-  const [snapshot, setSnapshot] = useState<Snapshot>({ status: 'loading' })
+export function SubagentModelCard({ t, scope, loadCatalog }: SubagentModelCardProps): ReactElement {
   const [open, setOpen] = useState(false)
-  const [providerOpen, setProviderOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
   const [effortOpen, setEffortOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const [catalog, setCatalog] = useState<CatalogState>({ status: 'loading' })
+  const saveStarted = useRef(false)
 
+  const snapshot = useSyncExternalStore(
+    useCallback((listener) => scope.subscribe(listener), [scope]),
+    useCallback(() => scope.getSnapshot(), [scope]),
+  )
+  const stored = snapshot.value
+  // Draft until the Host confirms the write: a rejected write leaves the
+  // selection standing while the card flags it and the mirror stays the
+  // source of truth for what is stored.
+  const [draft, setDraft] = useState<SubagentDefaultModelSettings | undefined>(undefined)
   useEffect(() => {
+    if (saving) {
+      saveStarted.current = true
+      return
+    }
+    if (!saveStarted.current) return
+    saveStarted.current = false
+    if (!failed) setOpen(false)
+  }, [saving, failed])
+
+  const value = draft ?? stored
+  const provider = value?.provider ?? ''
+  const model = value?.model ?? ''
+  const effort = value?.reasoningEffort ?? ''
+  const ready = snapshot.status === 'ready'
+  const disabled = !snapshot.writable
+  // Route drafts are records, so same-content comparison must be structural:
+  // selecting back the stored value discards the staged edit, not save it.
+  const draftSameAsStored = draft !== undefined && stored !== undefined
+    && (draft.provider ?? '') === (stored.provider ?? '')
+    && (draft.model ?? '') === (stored.model ?? '')
+    && (draft.reasoningEffort ?? '') === (stored.reasoningEffort ?? '')
+  const pending = draft !== undefined && !draftSameAsStored
+
+  // Fetch the catalog on every expand: dsh hot-reloads adapter/model lists
+  // (`llm/adapters-updated`), so a cached list could be stale across sessions.
+  // One RPC per expand is negligible on a settings page.
+  useEffect(() => {
+    if (!open) return
     let cancelled = false
-    loadSnapshot(connection)
-      .then(next => { if (!cancelled) setSnapshot(next) })
+    setCatalog({ status: 'loading' })
+    void loadCatalog()
+      .then(next => { if (!cancelled) setCatalog({ status: 'ready', catalog: next }) })
       .catch(error => {
         if (cancelled) return
-        setSnapshot({ status: 'error', error: error instanceof Error ? error.message : String(error) })
+        setCatalog({
+          status: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        })
       })
     return () => { cancelled = true }
-  }, [connection])
+  }, [open, loadCatalog])
 
-  // Reload when the namespace's raw section changes anywhere — another tab's
-  // write or an external settings.yaml edit. The reload re-reads the revision
-  // so the next write fences against the freshest document.
-  useEffect(() => {
-    const dispose = subscribeSettingsUpdates((ns) => {
-      if (ns !== NS) return
-      void loadSnapshot(connection)
-        .then(next => setSnapshot(prev => ({ ...next, ...(prev.error === undefined ? {} : { error: prev.error }) })))
-        .catch(error => setSnapshot({ status: 'error', error: error instanceof Error ? error.message : String(error) }))
-    })
-    return dispose
-  }, [connection, subscribeSettingsUpdates])
+  const groups = catalog.status === 'ready' ? catalog.catalog.groups : []
+  const failures = catalog.status === 'ready'
+    ? catalog.catalog.failures.filter(failure => groups.some(group => group.id === failure.id) === false)
+    : []
+  const group = groups.find(candidate => candidate.id === provider)
+  const entry = group?.models.find(candidate => candidate.id === model)
+  const efforts = entry?.reasoning?.efforts ?? []
+  const currentRouteId = routeIdOfSettings(value)
+  const routePresent = currentRouteId === BUILTIN_ID || entry !== undefined
+  const routeMissing = currentRouteId !== BUILTIN_ID && entry === undefined
+  const currentRouteLabel = currentRouteId === BUILTIN_ID
+    ? t('builtin')
+    : modelRowLabel(groups, provider, model)
 
-  const providerOptions = useMemo(
-    () => snapshot.catalog?.groups.map(group => ({ id: group.id, name: group.name })) ?? [],
-    [snapshot.catalog],
-  )
-  const currentGroup = useMemo(
-    () => snapshot.catalog?.groups.find(candidate => candidate.id === snapshot.provider),
-    [snapshot.catalog, snapshot.provider],
-  )
-  const modelOptions = useMemo(
-    () => currentGroup?.models.map(model => ({ id: model.id, name: model.name })) ?? [],
-    [currentGroup],
-  )
-  const currentModel = useMemo(
-    () => currentGroup?.models.find(candidate => candidate.id === snapshot.model),
-    [currentGroup, snapshot.model],
-  )
-  const effortOptions = useMemo(
-    () => currentModel?.reasoning?.efforts.map((effort: ModelReasoningEffort) => ({ id: effort.id, name: effort.name })) ?? [],
-    [currentModel],
-  )
-
-  /** Persist one complete selection immediately; optimistic UI with revert on failure. */
-  const pick = async (provider: string, model: string, reasoningEffort?: string): Promise<void> => {
-    const previous = snapshot
-    setSnapshot(prev => ({ ...prev, provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) }))
-    try {
-      const view = await saveSelection(provider, model, reasoningEffort, snapshot.revision)
-      const value = view.value as { provider?: string; model?: string; reasoningEffort?: string }
-      setSnapshot(prev => ({
-        ...prev,
-        provider: value.provider ?? provider,
-        model: value.model ?? model,
-        ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),
-        revision: view.revision,
-      }))
-    } catch (error) {
-      // A refused write (revision moved) or a transport failure restores the
-      // pre-pick state; the update subscription reloads the real section.
-      setSnapshot({
-        ...previous,
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      })
+  // Model rows grouped under a non-interactive provider heading, mirroring
+  // dsh's own model menus (group title above each provider's models). A route
+  // stored but absent from the catalog stays visible as a pinned row so the
+  // selection marker has a home and the user sees why the route is stale.
+  const modelEntries = useMemo<readonly MenuEntry[]>(() => {
+    const entries: MenuEntry[] = [{ id: BUILTIN_ID, label: t('builtin') }]
+    if (routeMissing) {
+      entries.push({ id: currentRouteId, label: modelRowLabel(groups, provider, model), disabled: true })
     }
+    for (const group of groups) {
+      entries.push({ type: 'label', id: `group:${group.id}`, text: group.name })
+      for (const model of group.models) {
+        entries.push({ id: routeIdOf(group.id, model.id), label: model.name })
+      }
+    }
+    return entries
+  }, [groups, routeMissing, currentRouteId, provider, model, t])
+
+  const statusText = !ready
+    ? snapshot.status === 'loading' ? t('loading') : t('unavailable')
+    : catalog.status === 'loading' ? t('loadingCatalog')
+      : catalog.status === 'error' ? t('catalogError', { message: catalog.message })
+        : undefined
+
+  /** Stage one flat model row or built-in; save writes provider+model atomically. */
+  const pickModel = (id: string): void => {
+    setModelOpen(false)
+    if (id === currentRouteId) {
+      // Selecting the stored route back discards the staged edit.
+      setDraft(undefined)
+      return
+    }
+    if (id === BUILTIN_ID) {
+      // Built-in: clear the whole route and its effort together.
+      setDraft({ provider: '', model: '', reasoningEffort: '' })
+      return
+    }
+    const separator = id.indexOf('\0')
+    if (separator === -1) return
+    const nextProvider = id.slice(0, separator)
+    const nextModel = id.slice(separator + 1)
+    const nextGroup = groups.find(candidate => candidate.id === nextProvider)
+    const nextEntry = nextGroup?.models.find(candidate => candidate.id === nextModel)
+    if (nextEntry === undefined) return
+    const nextEfforts = nextEntry.reasoning?.efforts ?? []
+    const nextEffort = effort !== '' && nextEfforts.some(candidate => candidate.id === effort)
+      ? effort
+      : ''
+    // A route change without an explicit effort lets the route's default
+    // effort take over; only carry an effort the user set when the new
+    // route still offers it.
+    setDraft({ provider: nextProvider, model: nextModel, reasoningEffort: nextEffort })
   }
 
-  /**
-   * Resolve the effort to keep after a model switch: keep the current effort
-   * when the new model offers it, else fall back to the model's default, else
-   * clear (inherit).
-   */
-  const effortForModel = (model: CatalogModel | undefined, current: string | undefined): string | undefined => {
-    if (model?.reasoning === undefined) return undefined
-    if (current !== undefined && model.reasoning.efforts.some(effort => effort.id === current)) return current
-    return model.reasoning.defaultEffort
+  const pickEffort = (id: string): void => {
+    setEffortOpen(false)
+    if (id === effort && draftSameAsStored) {
+      // Selecting the stored effort back discards the staged edit.
+      setDraft(undefined)
+      return
+    }
+    // An empty id stores the built-in marker, keeping all three fields on one
+    // two-state contract (non-empty = explicit, empty = defer).
+    setDraft({
+      provider: provider || '',
+      model: model || '',
+      reasoningEffort: id,
+    })
   }
 
-  const currentProvider = providerOptions.find(option => option.id === snapshot.provider)
+  const save = (): void => {
+    if (!pending || saving) return
+    const next = draft
+    if (next === undefined) return
+    setSaving(true)
+    const base = value ?? {}
+    const ops: SettingsPathOpView[] = []
+    const setField = <K extends keyof SubagentDefaultModelSettings>(field: K, nextValue: SubagentDefaultModelSettings[K]): void => {
+      if (nextValue === '') {
+        if (base[field] !== undefined) ops.push({ op: 'unset', path: [field] })
+      } else if (nextValue !== undefined) {
+        ops.push({ op: 'set', path: [field], value: nextValue })
+      }
+    }
+    setField('provider', next.provider ?? '')
+    setField('model', next.model ?? '')
+    setField('reasoningEffort', next.reasoningEffort ?? '')
+    void scope.mutate(ops).then(() => {
+      setDraft(undefined)
+      setFailed(false)
+    }).catch(() => {
+      setFailed(true)
+    }).finally(() => {
+      setSaving(false)
+    })
+  }
+
+  const discard = (): void => {
+    setDraft(undefined)
+    setFailed(false)
+  }
+
+  const blocked = !ready || !pending || saving
 
   return (
     <li className={`dsh_sdm_card${open ? ' dsh_sdm_cardOpen' : ''}`}>
@@ -187,155 +241,105 @@ export function SubagentModelCard({ t, connection, saveSelection, subscribeSetti
           <span className="dsh_sdm_name">{t('title')}</span>
           <span className="dsh_sdm_description">{t('desc')}</span>
         </span>
+        {pending ? <span className="dsh_sdm_pending">{t('unsaved')}</span> : null}
         <IconChevronDownOutline14 className={`dsh_sdm_chevron${open ? ' dsh_sdm_chevronOpen' : ''}`} />
       </button>
 
       {open && (
         <div className="dsh_sdm_body">
-          {snapshot.status === 'loading' && <p className="dsh_sdm_muted">{t('loading')}</p>}
-          {snapshot.status === 'error' && (
-            <p className="dsh_sdm_error" role="alert">{t('loadError', { message: snapshot.error ?? '' })}</p>
+          {statusText !== undefined && <p className="dsh_sdm_muted">{statusText}</p>}
+          {failures.length > 0 && (
+            <p className="dsh_sdm_muted">{t('partialFailure', { providers: failures.map(failure => failure.name).join('、') })}</p>
           )}
 
-          {snapshot.status === 'ready' && (
+          {ready && (
             <>
-              {(snapshot.catalog?.failures.length ?? 0) > 0 && (
-                <p className="dsh_sdm_muted">
-                  {t('partialFailure', {
-                    providers: snapshot.catalog!.failures
-                      .map(failure => failure.name)
-                      .join(', '),
-                  })}
-                </p>
-              )}
-              {providerOptions.length === 0 ? (
-                <p className="dsh_sdm_muted">{t('empty')}</p>
-              ) : (
-                <>
-                  <div className="dsh_sdm_row">
-                    <div className="dsh_sdm_rowText">
-                      <div className="dsh_sdm_rowTitle">{t('provider')}</div>
-                    </div>
-                    <Menu
-                      open={providerOpen}
-                      onClose={() => setProviderOpen(false)}
-                      items={providerOptions.map(option => ({
-                        id: option.id,
-                        label: option.name,
-                      }))}
-                      selectedId={snapshot.provider}
-                      onSelect={(id) => {
-                        setProviderOpen(false)
-                        const group = snapshot.catalog?.groups.find(candidate => candidate.id === id)
-                        const firstModel = group?.models[0]
-                        if (firstModel !== undefined) {
-                          void pick(id, firstModel.id, effortForModel(firstModel, snapshot.reasoningEffort))
-                        }
-                      }}
-                      align="end"
-                      portal
-                      anchor={(
-                        <button
-                          type="button"
-                          className="dsh_sdm_selector"
-                          aria-haspopup="menu"
-                          aria-expanded={providerOpen}
-                          onClick={() => setProviderOpen(value => !value)}
-                        >
-                          {currentProvider?.name ?? t('inherit')}
-                          <IconChevronDownOutline14 className="dsh_sdm_chevron" />
-                        </button>
-                      )}
-                    />
-                  </div>
-
-                  <div className="dsh_sdm_row">
-                    <div className="dsh_sdm_rowText">
-                      <div className="dsh_sdm_rowTitle">{t('model')}</div>
-                      <div className="dsh_sdm_rowDesc">{t('modelDesc', { provider: currentProvider?.name ?? t('inherit') })}</div>
-                    </div>
-                    <Menu
-                      open={modelOpen}
-                      onClose={() => setModelOpen(false)}
-                      items={modelOptions.map(option => ({
-                        id: option.id,
-                        label: option.name,
-                      }))}
-                      selectedId={snapshot.model}
-                      onSelect={(id) => {
-                        setModelOpen(false)
-                        if (snapshot.provider === undefined) return
-                        const model = currentGroup?.models.find(candidate => candidate.id === id)
-                        void pick(snapshot.provider, id, effortForModel(model, snapshot.reasoningEffort))
-                      }}
-                      align="end"
-                      portal
-                      anchor={(
-                        <button
-                          type="button"
-                          className="dsh_sdm_selector"
-                          aria-haspopup="menu"
-                          aria-expanded={modelOpen}
-                          disabled={modelOptions.length === 0}
-                          onClick={() => setModelOpen(value => !value)}
-                        >
-                          {currentModel?.name ?? t('inherit')}
-                          <IconChevronDownOutline14 className="dsh_sdm_chevron" />
-                        </button>
-                      )}
-                    />
-                  </div>
-
-                  {currentModel?.reasoning !== undefined && (
-                    <div className="dsh_sdm_row">
-                      <div className="dsh_sdm_rowText">
-                        <div className="dsh_sdm_rowTitle">{t('reasoning')}</div>
-                        <div className="dsh_sdm_rowDesc">{t('reasoningDesc')}</div>
-                      </div>
-                      <Menu
-                        open={effortOpen}
-                        onClose={() => setEffortOpen(false)}
-                        items={[
-                          { id: '', label: t('inherit') },
-                          ...effortOptions.map(option => ({
-                            id: option.id,
-                            label: option.name,
-                          })),
-                        ]}
-                        selectedId={snapshot.reasoningEffort ?? ''}
-                        onSelect={(id) => {
-                          setEffortOpen(false)
-                          if (snapshot.provider !== undefined && snapshot.model !== undefined) {
-                            void pick(snapshot.provider, snapshot.model, id === '' ? undefined : id)
-                          }
-                        }}
-                        align="end"
-                        portal
-                        anchor={(
-                          <button
-                            type="button"
-                            className="dsh_sdm_selector"
-                            aria-haspopup="menu"
-                            aria-expanded={effortOpen}
-                            onClick={() => setEffortOpen(value => !value)}
-                          >
-                            {snapshot.reasoningEffort !== undefined
-                              ? effortOptions.find(option => option.id === snapshot.reasoningEffort)?.name ?? snapshot.reasoningEffort
-                              : t('inherit')}
-                            <IconChevronDownOutline14 className="dsh_sdm_chevron" />
-                          </button>
-                        )}
-                      />
-                    </div>
+              <div className="dsh_sdm_row">
+                <div className="dsh_sdm_rowText">
+                  <div className="dsh_sdm_rowTitle">{t('model')}</div>
+                </div>
+                <Menu
+                  open={modelOpen && !disabled && !saving}
+                  onClose={() => setModelOpen(false)}
+                  items={modelEntries}
+                  selectedId={routePresent ? currentRouteId : undefined}
+                  onSelect={(id) => { pickModel(id) }}
+                  align="end"
+                  portal
+                  anchor={(
+                    <button
+                      type="button"
+                      className="dsh_sdm_selector"
+                      aria-haspopup="menu"
+                      aria-expanded={modelOpen}
+                      disabled={disabled || saving || modelEntries.length <= 1}
+                      onClick={() => setModelOpen(value => !value)}
+                    >
+                      <span className="dsh_sdm_selectorText">{currentRouteLabel}</span>
+                      <IconChevronDownOutline14 className="dsh_sdm_chevron" />
+                    </button>
                   )}
+                />
+              </div>
 
-                  {snapshot.error !== undefined && (
-                    <p className="dsh_sdm_error" role="alert">{t('saveError', { message: snapshot.error })}</p>
-                  )}
-                </>
+              {currentRouteId !== BUILTIN_ID && (entry?.reasoning !== undefined || routeMissing) && (
+                <div className="dsh_sdm_row">
+                  <div className="dsh_sdm_rowText">
+                    <div className="dsh_sdm_rowTitle">{t('effort')}</div>
+                  </div>
+                  <Menu
+                    open={effortOpen && !disabled && !saving}
+                    onClose={() => setEffortOpen(false)}
+                    items={[
+                      { id: '', label: t('effortEmpty') },
+                      ...efforts.map(item => ({ id: item.id, label: item.name })),
+                    ]}
+                    selectedId={effort}
+                    onSelect={(id) => { pickEffort(id) }}
+                    align="end"
+                    portal
+                    anchor={(
+                      <button
+                        type="button"
+                        className="dsh_sdm_selector"
+                        aria-haspopup="menu"
+                        aria-expanded={effortOpen}
+                        disabled={disabled || saving || efforts.length === 0}
+                        onClick={() => setEffortOpen(value => !value)}
+                      >
+                        <span className="dsh_sdm_selectorText">
+                          {effort === ''
+                            ? t('effortEmpty')
+                            : efforts.find(item => item.id === effort)?.name ?? effort}
+                        </span>
+                        <IconChevronDownOutline14 className="dsh_sdm_chevron" />
+                      </button>
+                    )}
+                  />
+                </div>
               )}
             </>
           )}
+
+          <div className="dsh_sdm_footer">
+            {failed ? <p className="dsh_sdm_failed" role="status">{t('saveError')}</p> : null}
+            <button
+              type="button"
+              className="dsh_sdm_discard"
+              disabled={!pending || saving}
+              onClick={discard}
+            >
+              {t('discard')}
+            </button>
+            <button
+              type="button"
+              className="dsh_sdm_save"
+              disabled={blocked}
+              onClick={save}
+            >
+              {t(saving ? 'saving' : 'save')}
+            </button>
+          </div>
         </div>
       )}
     </li>

@@ -2,7 +2,7 @@
   "name": "dsh-ponytail",
   "description": "Lazy senior dev mode for DeepSeek Harness: an always-on coding ruleset, six ponytail skills, a /ponytail intensity command, and a plugin configuration card. The best code is the code you never wrote.",
   "type": "module",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "MIT",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -32,11 +32,10 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-settings-plugins",
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-api-remotes"
+        "@deepseek-ai/dsh-client-ui-renderer"
       ]
     }
   },
@@ -54,11 +53,11 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "catalog:",
     "@deepseek-ai/dsh-agent": "catalog:",
-    "@deepseek-ai/dsh-api-remotes": "catalog:",
-    "@deepseek-ai/dsh-client-connection": "catalog:",
     "@deepseek-ai/dsh-client-locale": "catalog:",
-    "@deepseek-ai/dsh-client-runtime": "catalog:",
+    "@deepseek-ai/dsh-client-ui-primitives": "catalog:",
+    "@deepseek-ai/dsh-client-ui-settings": "catalog:",
     "@deepseek-ai/dsh-client-ui-settings-plugins": "catalog:",
+    "@deepseek-ai/dsh-client-ui-slots": "catalog:",
     "@deepseek-ai/dsh-commands": "catalog:",
     "@deepseek-ai/dsh-llm": "catalog:",
     "@deepseek-ai/dsh-settings": "catalog:",
@@ -68,10 +67,11 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "catalog:",
     "@deepseek-ai/dsh-agent": "catalog:",
-    "@deepseek-ai/dsh-api-remotes": "catalog:",
-    "@deepseek-ai/dsh-client-connection": "catalog:",
     "@deepseek-ai/dsh-client-locale": "catalog:",
-    "@deepseek-ai/dsh-client-runtime": "catalog:",
+    "@deepseek-ai/dsh-client-store": "catalog:",
+    "@deepseek-ai/dsh-client-ui-primitives": "catalog:",
+    "@deepseek-ai/dsh-client-ui-renderer": "catalog:",
+    "@deepseek-ai/dsh-client-ui-settings": "catalog:",
     "@deepseek-ai/dsh-client-ui-settings-plugins": "catalog:",
     "@deepseek-ai/dsh-client-ui-slots": "catalog:",
     "@deepseek-ai/dsh-commands": "catalog:",

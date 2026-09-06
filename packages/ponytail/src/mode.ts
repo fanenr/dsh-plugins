@@ -16,8 +16,8 @@ export const DEFAULT_MODE: RuntimeMode = 'full'
 /** Ordered valid runtime levels. */
 export const RUNTIME_MODES: readonly RuntimeMode[] = ['off', 'lite', 'full', 'ultra']
 
-/** Dropdown display order: intensities first, off last. */
-export const MODE_ORDER: readonly RuntimeMode[] = ['lite', 'full', 'ultra', 'off']
+/** Dropdown display order: intensities first, off last, `inherit` clears the override. */
+export const MODE_ORDER: readonly string[] = ['lite', 'full', 'ultra', 'off', '']
 
 /**
  * Normalize an arbitrary command argument to a runtime level.

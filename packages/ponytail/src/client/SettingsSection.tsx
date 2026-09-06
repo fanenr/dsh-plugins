@@ -1,19 +1,14 @@
-import { useEffect, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useRef, useSyncExternalStore, useState, type ReactElement } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type {
-  ConnectionHandle,
-  SettingsNamespaceView,
-  SettingsPathOpView,
-} from '@deepseek-ai/dsh-api-remotes/client'
+import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { IconChevronDownOutline14, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import { NS } from './locales.ts'
 import { MODE_ORDER } from '../mode.ts'
+import type { PonytailSettings } from './index.ts'
 
-/** Injected business face: connection plus the namespace write verb. */
+/** Injected business face: the bound settings scope for the ponytail namespace. */
 export interface PonytailInjected {
-  connection: ConnectionHandle
-  saveDefaultMode: (mode: string, expectedRevision?: number) => Promise<SettingsNamespaceView>
-  subscribeSettingsUpdates: (listener: (ns: string, revision: number) => void) => () => void
+  scope: SettingsScope<PonytailSettings>
 }
 
 /** Card props: owner share is empty for plugin cards. */
@@ -21,36 +16,6 @@ export type PonytailCardProps =
   PropsRuntime<'settings.plugin.item'>
   & InjectFace<PonytailInjected>
   & PropsLocale<typeof NS>
-
-interface Snapshot {
-  defaultMode?: string
-  revision?: number
-  status: 'loading' | 'ready' | 'error'
-  error?: string
-}
-
-/** Minimal settings describe wire shape used here. */
-interface SettingsView {
-  ns: string
-  revision: number
-  value: { defaultMode?: string }
-}
-
-/** Load the ponytail namespace value. */
-async function loadSnapshot(connection: ConnectionHandle): Promise<Snapshot> {
-  const settingsResponse = await connection.api.settings.describe({})
-  if (!settingsResponse.result.ok) throw new Error(settingsResponse.result.error.message)
-  const view = (settingsResponse.result.value as { namespaces: SettingsView[] }).namespaces
-    .find(candidate => candidate.ns === NS)
-  if (view === undefined) {
-    return { status: 'ready' }
-  }
-  return {
-    ...(view.value.defaultMode === undefined ? {} : { defaultMode: view.value.defaultMode }),
-    revision: view.revision,
-    status: 'ready',
-  }
-}
 
 /** The dropdown label for one level. */
 function modeLabel(t: PonytailCardProps['t'], mode: string): string {
@@ -63,55 +28,73 @@ function modeLabel(t: PonytailCardProps['t'], mode: string): string {
   }
 }
 
-export function PonytailCard({ t, connection, saveDefaultMode, subscribeSettingsUpdates }: PonytailCardProps): ReactElement {
-  const [snapshot, setSnapshot] = useState<Snapshot>({ status: 'loading' })
+export function PonytailCard({ t, scope }: PonytailCardProps): ReactElement {
   const [open, setOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
-
+  const [saving, setSaving] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const saveStarted = useRef(false)
+  const snapshot = useSyncExternalStore(
+    useCallback((listener) => scope.subscribe(listener), [scope]),
+    useCallback(() => scope.getSnapshot(), [scope]),
+  )
+  // Draft until the Host confirms the write: a rejected write leaves the
+  // selection standing while the card flags it and the mirror stays the
+  // source of truth for what is stored.
+  const [draft, setDraft] = useState<string | undefined>(undefined)
   useEffect(() => {
-    let cancelled = false
-    loadSnapshot(connection)
-      .then(next => { if (!cancelled) setSnapshot(next) })
-      .catch(error => {
-        if (cancelled) return
-        setSnapshot({ status: 'error', error: error instanceof Error ? error.message : String(error) })
-      })
-    return () => { cancelled = true }
-  }, [connection])
-
-  // Reload when the namespace's raw section changes anywhere — another tab's
-  // write or an external settings.yaml edit. The reload re-reads the revision
-  // so the next write fences against the freshest document.
-  useEffect(() => {
-    const dispose = subscribeSettingsUpdates((ns) => {
-      if (ns !== NS) return
-      void loadSnapshot(connection)
-        .then(next => setSnapshot(prev => ({ ...next, ...(prev.error === undefined ? {} : { error: prev.error }) })))
-        .catch(error => setSnapshot({ status: 'error', error: error instanceof Error ? error.message : String(error) }))
-    })
-    return dispose
-  }, [connection, subscribeSettingsUpdates])
-
-  /** Persist one level; optimistic UI with revert on failure. */
-  const pick = async (mode: string): Promise<void> => {
-    const previous = snapshot
-    setSnapshot(prev => ({ ...prev, defaultMode: mode }))
-    try {
-      const view = await saveDefaultMode(mode, snapshot.revision)
-      const value = view.value as { defaultMode?: string }
-      setSnapshot(prev => ({
-        ...prev,
-        defaultMode: value.defaultMode ?? mode,
-        revision: view.revision,
-      }))
-    } catch (error) {
-      setSnapshot({
-        ...previous,
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      })
+    if (saving) {
+      saveStarted.current = true
+      return
     }
+    if (!saveStarted.current) return
+    saveStarted.current = false
+    if (!failed) setOpen(false)
+  }, [saving, failed])
+  const stored = snapshot.value?.defaultMode
+  const pending = draft !== undefined && draft !== stored
+  const mode = pending ? draft : stored
+  const saved = snapshot.status === 'ready'
+  const label = mode !== undefined && mode !== '' ? modeLabel(t, mode) : t('inherit')
+  const status = snapshot.status === 'loading'
+    ? t('loading')
+    : snapshot.status === 'unavailable' ? t('unavailable') : undefined
+
+  const pick = (next: string): void => {
+    setMenuOpen(false)
+    if (!saved) return
+    if (next === stored) {
+      setDraft(undefined)
+      setFailed(false)
+      return
+    }
+    setDraft(next)
+    setFailed(false)
   }
+
+  const save = (): void => {
+    if (!pending || saving) return
+    setSaving(true)
+    void scope.mutate([
+      draft === ''
+        ? { op: 'unset', path: ['defaultMode'] }
+        : { op: 'set', path: ['defaultMode'], value: draft },
+    ]).then(() => {
+      setDraft(undefined)
+      setFailed(false)
+    }).catch(() => {
+      setFailed(true)
+    }).finally(() => {
+      setSaving(false)
+    })
+  }
+
+  const discard = (): void => {
+    setDraft(undefined)
+    setFailed(false)
+  }
+
+  const blocked = !saved || !pending || saving
 
   return (
     <li className={`dsh_ponytail_card${open ? ' dsh_ponytail_cardOpen' : ''}`}>
@@ -125,57 +108,64 @@ export function PonytailCard({ t, connection, saveDefaultMode, subscribeSettings
           <span className="dsh_ponytail_name">{t('title')}</span>
           <span className="dsh_ponytail_description">{t('desc')}</span>
         </span>
+        {pending ? <span className="dsh_ponytail_pending">{t('unsaved')}</span> : null}
         <IconChevronDownOutline14 className={`dsh_ponytail_chevron${open ? ' dsh_ponytail_chevronOpen' : ''}`} />
       </button>
 
       {open && (
         <div className="dsh_ponytail_body">
-          {snapshot.status === 'loading' && <p className="dsh_ponytail_muted">{t('loading')}</p>}
-          {snapshot.status === 'error' && (
-            <p className="dsh_ponytail_error" role="alert">{t('loadError', { message: snapshot.error ?? '' })}</p>
-          )}
-
-          {snapshot.status === 'ready' && (
-            <>
-              <div className="dsh_ponytail_row">
-                <div className="dsh_ponytail_rowText">
-                  <div className="dsh_ponytail_rowTitle">{t('defaultMode')}</div>
-                  <div className="dsh_ponytail_rowDesc">{t('defaultModeDesc')}</div>
-                </div>
-                <Menu
-                  open={menuOpen}
-                  onClose={() => setMenuOpen(false)}
-                  items={MODE_ORDER.map(mode => ({
-                    id: mode,
-                    label: modeLabel(t, mode),
-                  }))}
-                  selectedId={snapshot.defaultMode}
-                  onSelect={(id) => {
-                    setMenuOpen(false)
-                    void pick(id)
-                  }}
-                  align="end"
-                  portal
-                  anchor={(
-                    <button
-                      type="button"
-                      className="dsh_ponytail_selector"
-                      aria-haspopup="menu"
-                      aria-expanded={menuOpen}
-                      onClick={() => setMenuOpen(value => !value)}
-                    >
-                      {snapshot.defaultMode !== undefined ? modeLabel(t, snapshot.defaultMode) : t('inherit')}
-                      <IconChevronDownOutline14 className="dsh_ponytail_chevron" />
-                    </button>
-                  )}
-                />
+          {status !== undefined && <p className="dsh_ponytail_muted">{status}</p>}
+          {saved && (
+            <div className="dsh_ponytail_row">
+              <div className="dsh_ponytail_rowText">
+                <div className="dsh_ponytail_rowTitle">{t('defaultMode')}</div>
               </div>
-
-              {snapshot.error !== undefined && (
-                <p className="dsh_ponytail_error" role="alert">{t('saveError', { message: snapshot.error })}</p>
-              )}
-            </>
+              <Menu
+                open={menuOpen && !saving}
+                onClose={() => setMenuOpen(false)}
+                items={MODE_ORDER.map(item => ({
+                  id: item,
+                  label: item === '' ? t('inherit') : modeLabel(t, item),
+                }))}
+                selectedId={mode}
+                onSelect={(id) => { pick(id) }}
+                align="end"
+                portal
+                anchor={(
+                  <button
+                    type="button"
+                    className="dsh_ponytail_selector"
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
+                    disabled={saving}
+                    onClick={() => setMenuOpen(value => !value)}
+                  >
+                    {label}
+                    <IconChevronDownOutline14 className="dsh_ponytail_chevron" />
+                  </button>
+                )}
+              />
+            </div>
           )}
+          <div className="dsh_ponytail_footer">
+            {failed ? <p className="dsh_ponytail_failed" role="status">{t('saveError')}</p> : null}
+            <button
+              type="button"
+              className="dsh_ponytail_discard"
+              disabled={!pending || saving}
+              onClick={discard}
+            >
+              {t('discard')}
+            </button>
+            <button
+              type="button"
+              className="dsh_ponytail_save"
+              disabled={blocked}
+              onClick={save}
+            >
+              {t(saving ? 'saving' : 'save')}
+            </button>
+          </div>
         </div>
       )}
     </li>

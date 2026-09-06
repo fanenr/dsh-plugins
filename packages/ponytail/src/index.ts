@@ -15,7 +15,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-commands'
@@ -71,7 +71,7 @@ export function apply(ctx: Context, config: Config): void {
   // → composition base `config.defaultMode` → user layer). The live mode starts
   // there and only `/ponytail <level>` moves it; a card edit changes the
   // default for the next boot, not the running process.
-  const scope = ctx.settings.register(settingsNamespace(SETTINGS_NS), Config, {
+  const scope = ctx.settings.register(SETTINGS_NS, Config, {
     base: { defaultMode: config.defaultMode },
     applies: 'restart',
   })
