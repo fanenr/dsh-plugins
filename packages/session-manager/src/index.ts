@@ -1,14 +1,10 @@
 /**
  * dsh-session-manager — Host half.
  *
- * Registers the authenticated `/session-manager` RPC channel (list, preview,
- * delete, setArchived) over the harness's Connection transport.
- *
- * The RPC channel is preferred over raw webServer routes because Connection
- * applies the Host/Origin fence and browser authentication before dispatch
- * — the manager exposes destructive operations and must not accept
- * unauthenticated requests. The channel is an inject-scoped registration,
- * so a profile without a web surface never mounts it.
+ * Mounts the authenticated `POST /api/session-manager` route (list, preview,
+ * delete, setArchived) as a Connection exact fetch route, which keeps the
+ * Host/Origin fence and browser authentication in front of these destructive
+ * operations while staying off profiles with no web surface.
  *
  * @module dsh-session-manager
  */
@@ -22,14 +18,14 @@ import { listAll, previewOf, rawEventsOf } from './host/list.ts'
 import { setArchived } from './host/store.ts'
 import { deleteSession, descendantsOf, idVariants, type DeleteHost } from './host/delete.ts'
 import {
-  CHANNEL, ENDPOINT,
+  ROUTE, ENDPOINT,
   type SetArchivedRequest,
 } from './shared/types.ts'
 
 /** Plugin identity, used as the cordis bundle entry name. */
 export const name = 'dsh-session-manager'
 
-/** Services this plugin requires unconditionally. The RPC channel mounts
+/** Services this plugin requires unconditionally. The API route mounts
  *  lazily through `ctx.inject(['connection'])`, so a profile without a web
  *  surface never mounts it. */
 export const inject: string[] = []
@@ -99,17 +95,34 @@ function deleteHostOf(ctx: Context): DeleteHost {
   }
 }
 
-/** Wire the RPC channel onto the connection service. */
-function watchChannel(ctx: Context): void {
+/**
+ * Mount the authenticated `/api/session-manager` route on Connection.
+ *
+ * An exact fetch route, deliberately not `connection.rpc.handle()`: that verb
+ * mounts its physical route through `owner.webServer.register(...)`, where
+ * `owner` is the connection plugin's own context. Since 0.1.5-alpha.1 that
+ * context declares only `credentials`, so the strict `webServer` read throws
+ * inside cordis's isolated effect — this plugin activates, the channel never
+ * mounts, and every call reaches the static fallback's 405. Exact fetch routes
+ * avoid `webServer` entirely while still running behind Connection's
+ * Host/Origin fence and browser authentication, and an absent `connection`
+ * keeps the route off profiles with no web surface.
+ */
+function watchRoute(ctx: Context): void {
   ctx.inject(['connection'], (c) => {
     const connection = c.get('connection') as {
-      rpc?: {
-        handle(channel: string, handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>): () => Promise<void>
+      fetch?: {
+        register(route: {
+          path: string
+          methods: readonly ('GET' | 'HEAD' | 'POST')[]
+          requestBody: 'buffered'
+          fetch(request: Request): Promise<Response>
+        }): () => Promise<void>
       }
     } | undefined
-    const handle = connection?.rpc?.handle
-    if (typeof handle !== 'function') return
-    const bound = handle.bind(connection?.rpc)
+    const register = connection?.fetch?.register
+    if (typeof register !== 'function') return
+    const bound = register.bind(connection?.fetch)
 
     const handler = async (endpoint: string, payload: unknown, _signal: AbortSignal): Promise<unknown> => {
       try {
@@ -179,9 +192,36 @@ function watchChannel(ctx: Context): void {
     }
 
     c.effect(() => {
-      const unregister = bound(CHANNEL, handler)
+      const unregister = bound({
+        path: ROUTE,
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: async (request) => {
+          let body: unknown
+          try {
+            body = await request.json()
+          } catch {
+            return jsonResponse({ ok: false, error: { code: 'gateway/bad-request', message: 'body is not JSON', details: {} } }, 400)
+          }
+          const envelope = asRecord(body)
+          const endpoint = asString(envelope?.endpoint)
+          if (endpoint === null) {
+            return jsonResponse({ ok: false, error: { code: 'gateway/bad-request', message: 'missing endpoint', details: {} } }, 400)
+          }
+          const result = await handler(endpoint, envelope?.payload, request.signal)
+          return jsonResponse(result, 200)
+        },
+      })
       return () => { void unregister() }
-    }, 'dsh-session-manager: rpc channel')
+    }, 'dsh-session-manager: api route')
+  })
+}
+
+/** Serialize one handler result as a JSON response. */
+function jsonResponse(value: unknown, status: number): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   })
 }
 
@@ -196,5 +236,5 @@ function badRequest(message: string): unknown {
 
 /** Host plugin body. */
 export function apply(ctx: Context): void {
-  watchChannel(ctx)
+  watchRoute(ctx)
 }

@@ -1,7 +1,7 @@
 /**
  * Host-facing wire shapes shared between the Host half and the Client half.
- * Every shape here is lossless JSON: it crosses the authenticated Connection
- * RPC channel and is re-proved by the client before rendering.
+ * Every shape here is lossless JSON: it crosses the authenticated
+ * `/api/session-manager` route and is re-proved by the client before rendering.
  *
  * @module dsh-session-manager/shared
  */
@@ -64,10 +64,22 @@ export interface SessionArchiveValue {
   archivedSessionIds: string[]
 }
 
-/** The authenticated Host channel (connection.rpc). */
-export const CHANNEL = '/session-manager'
+/**
+ * The authenticated Host route every manager call rides.
+ *
+ * A Connection *exact fetch route* under `/api`, not a dedicated RPC channel.
+ * `connection.rpc.handle()` mounts its physical route through
+ * `owner.webServer.register(...)` — a strict read evaluated on the *connection
+ * plugin's own* context, which declares only `credentials` since
+ * 0.1.5-alpha.1. That read throws inside cordis's isolated effect: the plugin
+ * still activates, the channel silently never mounts, and every call falls
+ * through to the static fallback's 405. Exact fetch routes never touch
+ * `webServer`, and Connection still applies its Host/Origin fence and browser
+ * authentication before dispatch.
+ */
+export const ROUTE = '/api/session-manager'
 
-/** Endpoint names on the channel. */
+/** Endpoint names under {@link ROUTE}. */
 export const ENDPOINT = {
   list: 'list',
   preview: 'preview',

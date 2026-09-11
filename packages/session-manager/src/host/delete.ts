@@ -8,7 +8,9 @@
  * teardown path for a live agent, so removing a live session's files would
  * strand the running agent on a ghost log. Only sessions without a live
  * store entry — and whose subagent children are likewise not live — can be
- * deleted. The caller surfaces that refusal; restart the profile and retry.
+ * deleted. This includes blank drafts: they live in the store until the
+ * profile restarts, so the manager list hides them (like the sidebar does)
+ * instead of offering a delete that would refuse.
  *
  * Failure policy: a log removal failure aborts before storage accounting is
  * touched, so a half-deleted session never falls out of its group. Storage
@@ -197,9 +199,14 @@ export async function deleteSession(host: DeleteHost, rootId: string): Promise<D
   const ids = descendantsOf(records, rootId)
   // The whole family must be non-live before anything is removed — a live
   // session refuses deletion, and a partial walk would orphan its children.
+  // The message names the ROOT (visible in the UI), never the live child:
+  // subagent sessions don't surface in the sidebar, so a child id here would
+  // be an unactionable address.
   for (const id of ids) {
     if (host.sessions?.get(id) !== undefined) {
-      throw new Error(`session "${id}" is live; stop the conversation and retry`)
+      throw new Error(id === rootId
+        ? `session "${rootId}" is live; stop the conversation and retry`
+        : `session "${rootId}" has a live subagent; wait for its conversation to end and retry`)
     }
   }
   const outcomes: DeleteOutcome[] = []

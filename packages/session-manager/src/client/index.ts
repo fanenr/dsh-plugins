@@ -19,7 +19,6 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { adoptStyles, dict, NS } from './i18n'
 import { makeSessionManagerView } from './view'
-import type { BridgeCtx } from './bridge'
 
 /** Client bundle id, stamped onto owned style tags for HMR bookkeeping. */
 const PLUGIN_ID = 'dsh-session-manager'
@@ -33,7 +32,7 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, dict), 'dsh-session-manager: dictionaries')
   const t = ctx.locale.bind(NS) as TranslateNS<typeof NS>
 
-  const view = makeSessionManagerView(t, ctx as BridgeCtx)
+  const view = makeSessionManagerView(t)
 
   ctx.slots.inject('settings.section', () => {
     return ctx.slots.register(

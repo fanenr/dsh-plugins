@@ -20,6 +20,10 @@ interface AgentsFace {
   get(id: string): { status?: string } | undefined
 }
 
+interface SessionsFace {
+  get(id: string): unknown
+}
+
 interface StorageDomainFace {
   get(name: string): {
     table(name: string): {
@@ -30,6 +34,8 @@ interface StorageDomainFace {
 
 interface WorkspaceRegistryFace {
   archivedSessionIds: readonly string[]
+  /** Workspace entities in display order, for the editable-title label. */
+  list?(): ReadonlyArray<{ path?: string; title?: string }>
 }
 
 /** One cell of a projection-cache record (proved field-wise). */
@@ -62,12 +68,14 @@ export interface ListedSession {
  * @param agents - live agent registry, when present.
  * @param proj - projection-cache domain, when present.
  * @param archived - archived session id set.
+ * @param projectTitles - cwd → workspace title, for the editable group label.
  */
 export function rowOf(
   record: SessionRecord,
   agents: AgentsFace | undefined,
   proj: StorageDomainFace | undefined,
   archived: Set<string>,
+  projectTitles: ReadonlyMap<string, string> | undefined,
 ): ListedSession {
   const header = record.header
   const id = String(header.id)
@@ -76,6 +84,7 @@ export function rowOf(
   const cacheRecord = projRecord(proj, id)
   const identity = asRecord(cacheRecord?.identity)
   const createdAt = asNumber(identity?.createdAt) ?? header.createdAt
+  const cwd = header.cwd === undefined || header.cwd === '' ? null : header.cwd
   return {
     sessionId: id,
     title: projTitle(cacheRecord),
@@ -86,7 +95,10 @@ export function rowOf(
     lastActivity: Math.max(createdAt, projLastActivity(cacheRecord) ?? createdAt),
     running,
     archived: archived.has(id),
-    project: header.cwd === undefined || header.cwd === '' ? null : basename(header.cwd),
+    // Group label is the workspace's editable title when the cwd belongs to a
+    // registered workspace; otherwise the directory basename (ungrouped rows
+    // whose directory is not a workspace still group by name).
+    project: cwd === null ? null : (projectTitles?.get(cwd) ?? basename(cwd)),
   }
 }
 
@@ -129,17 +141,46 @@ export async function listAll(ctx: Context): Promise<ListedSession[]> {
   }
   const records = await query.listSessions.call(query)
   const agents = ctx.get('agents') as AgentsFace | undefined
+  const sessions = ctx.get('sessions') as SessionsFace | undefined
   const proj = ctx.get('storageDomain') as StorageDomainFace | undefined
   const workspace = ctx.get('workspaceRegistry') as WorkspaceRegistryFace | undefined
   const archived = new Set((workspace?.archivedSessionIds ?? []).map(String))
+  // cwd → editable workspace title, so the group label follows a rename. A
+  // directory that is not a registered workspace falls back to its basename.
+  const projectTitles = new Map<string, string>()
+  for (const entity of workspace?.list?.() ?? []) {
+    if (entity.path !== undefined && entity.title !== undefined && entity.title !== '') {
+      projectTitles.set(entity.path, entity.title)
+    }
+  }
   // Subagent sessions (`origin: 'subagent'`) are excluded from the manager
   // list — they are numerous and managed through their parent. FORK sessions
   // stay: a fork carries a parentSession lineage but is an independent
   // top-level conversation, so parentSession alone must not filter it.
+  // Blank drafts (live, idle store entries whose log has never opened a
+  // turn) are excluded too, mirroring the harness sidebar: they are the
+  // provisional New Session placeholders and disappear once they receive
+  // input. They also have no reliable delete path while live, so hiding
+  // them keeps the manager honest about what it can actually delete.
   // Deletion still covers subagents: the recursive walk reads the corpus.
   return records
     .filter(record => record.header.origin !== 'subagent')
-    .map(record => rowOf(record, agents, proj, archived))
+    .filter(record => !isBlankDraft(sessions?.get(String(record.header.id)), agents?.get(String(record.header.id))))
+    .map(record => rowOf(record, agents, proj, archived, projectTitles))
+}
+
+/**
+ * True for a live, idle store entry whose FULL log has never opened a turn —
+ * the harness's own `blank` signal. The full log matters: a fork inherits its
+ * parent's turns, so its own-events suffix may have no `turn/start` even
+ * though the conversation is real. A fresh draft's log carries setup events,
+ * so the event count alone cannot tell blank from active.
+ */
+function isBlankDraft(session: unknown, agent: { status?: string } | undefined): boolean {
+  if (session === undefined) return false
+  if (agent?.status === 'running') return false
+  const events = (session as { snapshotEvents?(): ReadonlyArray<{ type?: string }> }).snapshotEvents?.() ?? []
+  return !events.some(event => event.type === 'turn/start')
 }
 
 /**

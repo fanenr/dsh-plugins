@@ -2,7 +2,7 @@
   "name": "dsh-session-manager",
   "description": "Manage every session of this profile from a Settings page: preview conversations, toggle archive, and permanently delete sessions (recursively) through an authenticated Host channel.",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -56,11 +56,12 @@
     "@deepseek-ai/dsh-client-ui-renderer": "catalog:",
     "@deepseek-ai/dsh-client-ui-settings": "catalog:",
     "@deepseek-ai/dsh-client-ui-slots": "catalog:",
-    "@deepseek-ai/dsh-session-query": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-session-query": "^0.1.5-rc.2",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "esbuild": "catalog:",
     "react": "catalog:",
     "typescript": "catalog:"
-  }
+  },
+  "private": true
 }

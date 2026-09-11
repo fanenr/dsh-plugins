@@ -173,7 +173,7 @@ test('deleteSession refuses when a descendant subagent is live', async () => {
   }
   await assert.rejects(
     () => deleteSession(host, '44444444-4444-4444-8444-444444444444'),
-    /session "55555555-5555-4555-8555-555555555555" is live; stop the conversation and retry/,
+    /session "44444444-4444-4444-8444-444444444444" has a live subagent; wait for its conversation to end and retry/,
   )
   assert.strictEqual(logs.removed.length, 0)
 })
@@ -308,4 +308,57 @@ test('groupRowsByProject sorts unarchived first then by activity within a group'
   ])
   const [group] = groups
   assert.deepStrictEqual(group.rows.map(r => r.sessionId), ['newest', 'mid', 'oldest', 'new-arch', 'old-arch'])
+})
+
+test('the Host route is an exact /api fetch route, not an rpc.handle channel', async () => {
+  // Regression guard for the 0.1.5-alpha.1 transport break: `connection.rpc.handle()`
+  // mounts its physical route through `owner.webServer.register(...)`, a strict read on
+  // the connection plugin's OWN context, which stopped injecting `webServer`. The read
+  // throws inside cordis's isolated effect, so the plugin activates while the channel
+  // silently never mounts and every call falls through to the static fallback's 405.
+  // Exact fetch routes never touch `webServer`, so the Host half must register one.
+  const types = await import('../lib/shared/types.js')
+  assert.equal(types.ROUTE, '/api/session-manager', 'route must live under the authenticated /api channel')
+  assert.equal(types.CHANNEL, undefined, 'the broken rpc channel constant must be gone')
+
+  const registered = []
+  const connection = {
+    fetch: { register: route => { registered.push(route); return async () => {} } },
+    // Present to prove the Host half does NOT reach for the broken verb.
+    rpc: { handle: () => { throw new Error('rpc.handle must not be used') } },
+  }
+  const ctx = {
+    inject: (_services, cb) => cb({
+      get: name => (name === 'connection' ? connection : undefined),
+      effect: fn => { fn(); return () => {} },
+    }),
+    get: name => (name === 'connection' ? connection : undefined),
+    effect: fn => { fn(); return () => {} },
+    emit: () => {},
+  }
+  const { apply } = await import('../lib/index.js')
+  apply(ctx)
+
+  assert.equal(registered.length, 1, 'the Host half must register exactly one route')
+  assert.equal(registered[0].path, '/api/session-manager')
+  assert.deepEqual([...registered[0].methods], ['POST'])
+  assert.equal(registered[0].requestBody, 'buffered')
+
+  // The route answers the same { ok, value } / { ok, error } envelope the callers prove.
+  const call = (body) => registered[0].fetch(new Request('http://x/api/session-manager', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }))
+  const bad = await call({ endpoint: 'nope', payload: {} })
+  assert.equal(bad.status, 200)
+  assert.deepEqual(await bad.json(), {
+    ok: false,
+    error: { code: 'dsh-session-manager/unknown-endpoint', message: 'unknown endpoint: nope', details: {} },
+  })
+  const malformed = await registered[0].fetch(new Request('http://x/api/session-manager', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: 'not-json',
+  }))
+  assert.equal(malformed.status, 400)
+  assert.equal((await malformed.json()).error.code, 'gateway/bad-request')
 })

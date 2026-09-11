@@ -18,7 +18,7 @@ import { React } from './react'
 import type { SessionManagerRow } from '../shared/types'
 import { groupRowsByProject } from '../shared/group'
 import {
-  deleteSession, listSessions, previewSession, setArchived, type BridgeCtx,
+  deleteSession, listSessions, previewSession, setArchived,
 } from './bridge'
 import type { SessionManagerKey } from './i18n'
 
@@ -59,7 +59,7 @@ function relativeTime(ts: number, now: number): string {
  * The section component. Pure React: every Host interaction goes through the
  * bridge, every state transition is local.
  */
-export function makeSessionManagerView(t: TFace, ctx: BridgeCtx): () => ReactNS.ReactElement {
+export function makeSessionManagerView(t: TFace): () => ReactNS.ReactElement {
   return function SessionManagerView(): ReactNS.ReactElement {
     const [list, setList] = React.useState<ListState>({ phase: 'loading' })
     const [preview, setPreview] = React.useState<PreviewState>({ phase: 'closed' })
@@ -84,13 +84,13 @@ export function makeSessionManagerView(t: TFace, ctx: BridgeCtx): () => ReactNS.
 
     const reload = React.useCallback(async (silent = false) => {
       if (!silent) setList({ phase: 'loading' })
-      const result = await listSessions(ctx)
+      const result = await listSessions()
       if (!result.ok) {
         if (!silent) setList({ phase: 'failed', message: result.message })
         return
       }
       setList({ phase: 'ready', rows: result.value.rows, archiveAvailable: result.value.archiveAvailable })
-    }, [ctx])
+    }, [])
 
     React.useEffect(() => {
       void reload()
@@ -100,24 +100,24 @@ export function makeSessionManagerView(t: TFace, ctx: BridgeCtx): () => ReactNS.
 
     const openPreview = React.useCallback(async (row: SessionManagerRow) => {
       setPreview({ phase: 'loading', sessionId: row.sessionId })
-      const result = await previewSession(ctx, row.sessionId)
+      const result = await previewSession(row.sessionId)
       if (!result.ok) {
         setPreview({ phase: 'failed', sessionId: row.sessionId, message: result.message })
         return
       }
       setPreview({ phase: 'ready', sessionId: row.sessionId, messages: result.value.messages, eventTypes: result.value.eventTypes })
-    }, [ctx])
+    }, [])
 
     const toggleArchive = React.useCallback(async (row: SessionManagerRow) => {
-      const result = await setArchived(ctx, row.sessionId, !row.archived)
+      const result = await setArchived(row.sessionId, !row.archived)
       if (result.ok) void reload(true)
-    }, [ctx, reload])
+    }, [reload])
 
     const runDelete = React.useCallback(async (sessionIds: readonly string[]) => {
       setDel({ phase: 'running' })
       const failures: Array<{ id: string; message: string }> = []
       for (const id of sessionIds) {
-        const result = await deleteSession(ctx, id)
+        const result = await deleteSession(id)
         if (!result.ok) failures.push({ id, message: result.message })
       }
       if (failures.length > 0) {
@@ -128,7 +128,7 @@ export function makeSessionManagerView(t: TFace, ctx: BridgeCtx): () => ReactNS.
       setConfirmIds([])
       setSelected(new Set())
       void reload(true)
-    }, [ctx, reload])
+    }, [reload])
 
     return (
       <div className="sm-manager">

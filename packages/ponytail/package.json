@@ -84,5 +84,6 @@
     "esbuild": "catalog:",
     "react": "catalog:",
     "typescript": "catalog:"
-  }
+  },
+  "private": true
 }

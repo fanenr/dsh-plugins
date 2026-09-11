@@ -1,11 +1,13 @@
 /**
- * The client half's RPC bridge to the Host channel (`/session-manager`).
+ * The client half's bridge to the Host route (`POST /api/session-manager`).
  *
- * Reads ride the harness's generic Connection RPC (`ctx.connection.rpc.call`)
- * — resolved through a reflect read so a hostile or absent connection service
- * degrades to undefined instead of throwing. Responses are re-proved at the
- * boundary: a malformed payload becomes a typed failure, never a half-merged
- * render.
+ * Calls ride Connection's authenticated exact fetch route rather than
+ * `ctx.connection.rpc.call`: the harness's `connection.rpc.handle()` cannot
+ * mount a channel for a third-party plugin on 0.1.5 (it reads `webServer` off
+ * the connection plugin's own context, which no longer injects it), so the
+ * route keeps the same Host/Origin fence and browser authentication without
+ * that broken verb. Responses are re-proved at the boundary: a malformed
+ * payload becomes a typed failure, never a half-merged render.
  *
  * @module dsh-session-manager/client-bridge
  */
@@ -13,23 +15,13 @@
 import type {
   SessionArchiveValue, SessionDeleteValue, SessionManagerListValue, SessionPreviewValue,
 } from '../shared/types'
-import { CHANNEL, ENDPOINT } from '../shared/types'
+import { ENDPOINT, ROUTE } from '../shared/types'
 import type { SessionManagerRow } from '../shared/types'
 /** Narrow any value to a plain record, or null. */
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null
-}
-
-/** The client-side connection rpc face (call via POST envelope). */
-interface RpcFace {
-  call(channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown>
-}
-
-/** The generic client context face this bridge reads. */
-export interface BridgeCtx {
-  get(name: string): unknown
 }
 
 /** One proved list row. */
@@ -58,31 +50,37 @@ function messageOf(value: unknown): { role: 'user' | 'assistant'; text: string }
   return { role, text: record.text }
 }
 
-/** Resolve the connection rpc caller once, defensively. */
-function callerOf(ctx: BridgeCtx): ((channel: string, endpoint: string, payload: unknown, signal?: AbortSignal) => Promise<unknown>) | undefined {
-  try {
-    const connection = ctx.get('connection')
-    const rpc = asRecord(connection)?.rpc
-    const call = rpc !== null ? (rpc as { call?: unknown }).call : undefined
-    if (typeof call === 'function') return (call as RpcFace['call']).bind(rpc)
-  } catch { /* hostile service read: no caller */ }
-  return undefined
-}
-
 /** A completed Host call, proved. */
 type CallResult<T> =
   | { ok: true; value: T }
   | { ok: false; message: string }
 
-async function callHost<T>(ctx: BridgeCtx, endpoint: string, payload: unknown, prove: (value: unknown) => T | null): Promise<CallResult<T>> {
-  const call = callerOf(ctx)
-  if (call === undefined) {
-    return { ok: false, message: 'host channel unavailable' }
-  }
+/**
+ * POST one endpoint to the Host route and re-prove the reply.
+ *
+ * The route answers with the same `{ ok, value }` / `{ ok, error }` envelope
+ * the RPC channel used, so every caller below is unchanged. Transport faults
+ * (offline, 4xx/5xx, non-JSON) become typed failures instead of throwing.
+ */
+async function callHost<T>(endpoint: string, payload: unknown, prove: (value: unknown) => T | null): Promise<CallResult<T>> {
   try {
-    const result = asRecord(await call(CHANNEL, endpoint, payload))
-    if (result === null || result.ok !== true) {
-      return { ok: false, message: 'host call failed' }
+    const response = await fetch(ROUTE, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ endpoint, payload }),
+    })
+    if (!response.ok) {
+      return { ok: false, message: `transport failure for ${ROUTE}/${endpoint}: HTTP ${response.status}` }
+    }
+    const result = asRecord(await response.json())
+    if (result === null) {
+      return { ok: false, message: 'host returned an invalid response' }
+    }
+    if (result.ok !== true) {
+      // Surface the host's own error (e.g. a live-session refusal) instead
+      // of replacing it with a generic placeholder.
+      const error = asRecord(result.error)
+      return { ok: false, message: typeof error?.message === 'string' && error.message.length > 0 ? error.message : 'host call failed' }
     }
     const value = prove(result.value)
     if (value === null) return { ok: false, message: 'host returned a malformed value' }
@@ -93,8 +91,8 @@ async function callHost<T>(ctx: BridgeCtx, endpoint: string, payload: unknown, p
 }
 
 /** List every session through the Host. */
-export function listSessions(ctx: BridgeCtx): Promise<CallResult<SessionManagerListValue>> {
-  return callHost(ctx, ENDPOINT.list, {}, (value) => {
+export function listSessions(): Promise<CallResult<SessionManagerListValue>> {
+  return callHost(ENDPOINT.list, {}, (value) => {
     const record = asRecord(value)
     if (record === null) return null
     const rowsRaw = record.rows
@@ -112,8 +110,8 @@ export function listSessions(ctx: BridgeCtx): Promise<CallResult<SessionManagerL
 }
 
 /** Preview one session through the Host. */
-export function previewSession(ctx: BridgeCtx, sessionId: string): Promise<CallResult<SessionPreviewValue>> {
-  return callHost(ctx, ENDPOINT.preview, { sessionId }, (value) => {
+export function previewSession(sessionId: string): Promise<CallResult<SessionPreviewValue>> {
+  return callHost(ENDPOINT.preview, { sessionId }, (value) => {
     const record = asRecord(value)
     if (record === null) return null
     if (typeof record.sessionId !== 'string') return null
@@ -135,8 +133,8 @@ export function previewSession(ctx: BridgeCtx, sessionId: string): Promise<CallR
 }
 
 /** Delete one session (and descendants) through the Host. */
-export function deleteSession(ctx: BridgeCtx, sessionId: string): Promise<CallResult<SessionDeleteValue>> {
-  return callHost(ctx, ENDPOINT.delete, { sessionId }, (value) => {
+export function deleteSession(sessionId: string): Promise<CallResult<SessionDeleteValue>> {
+  return callHost(ENDPOINT.delete, { sessionId }, (value) => {
     const record = asRecord(value)
     if (record === null) return null
     const outcomes = record.outcomes
@@ -146,8 +144,8 @@ export function deleteSession(ctx: BridgeCtx, sessionId: string): Promise<CallRe
 }
 
 /** Toggle one session's archive membership through the Host. */
-export function setArchived(ctx: BridgeCtx, sessionId: string, archived: boolean): Promise<CallResult<SessionArchiveValue>> {
-  return callHost(ctx, ENDPOINT.setArchived, { sessionId, archived }, (value) => {
+export function setArchived(sessionId: string, archived: boolean): Promise<CallResult<SessionArchiveValue>> {
+  return callHost(ENDPOINT.setArchived, { sessionId, archived }, (value) => {
     const record = asRecord(value)
     if (record === null) return null
     const ids = record.archivedSessionIds
