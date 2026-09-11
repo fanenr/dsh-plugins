@@ -362,3 +362,73 @@ test('the Host route is an exact /api fetch route, not an rpc.handle channel', a
   assert.equal(malformed.status, 400)
   assert.equal((await malformed.json()).error.code, 'gateway/bad-request')
 })
+
+/**
+ * Drive the `list` endpoint with one live session and a chosen
+ * `sessionListMetadata` projection result. `stateOf` may be absent, may
+ * return a value, or may throw — every case must degrade to a decision, never
+ * a failed listing.
+ */
+async function listWithLiveSession({ stateOf, running = false }) {
+  const id = '77777777-7777-4777-8777-777777777777'
+  const registered = []
+  const connection = { fetch: { register: route => { registered.push(route); return async () => {} } } }
+  const sessionProjections = stateOf === undefined ? undefined : { stateOf }
+  const ctx = {
+    // The route mounts through `ctx.inject(['connection'], ...)`; the injected
+    // context must resolve `connection` exactly as the host's does.
+    inject: (_services, cb) => cb({
+      get: name => (name === 'connection' ? connection : undefined),
+      effect: fn => { fn(); return () => {} },
+    }),
+    get: name => {
+      if (name === 'connection') return connection
+      if (name === 'sessionQuery') return { listSessions: async () => [record(id)] }
+      if (name === 'sessions') return { get: key => (key === id ? { id } : undefined) }
+      if (name === 'agents') return { get: () => ({ status: running ? 'running' : 'idle' }) }
+      if (name === 'sessionProjections') return sessionProjections
+      return undefined
+    },
+    effect: fn => { fn(); return () => {} },
+    emit: () => {},
+  }
+  const { apply } = await import('../lib/index.js')
+  apply(ctx)
+  const response = await registered[0].fetch(new Request('http://x/api/session-manager', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ endpoint: 'list', payload: {} }),
+  }))
+  const body = await response.json()
+  assert.equal(body.ok, true, 'the list endpoint must not fail')
+  return body.value.rows.map(row => row.sessionId)
+}
+
+test('list hides a blank live draft read from the sessionListMetadata projection', async () => {
+  // The harness folds `blank` over the FULL log, so this is the supported
+  // signal; the manager must not recompute it from raw events.
+  const ids = await listWithLiveSession({ stateOf: () => ({ blank: true, lastPromptAt: null }) })
+  assert.deepStrictEqual(ids, [], 'a blank draft must be hidden')
+})
+
+test('list keeps a live session whose projection reports blank: false', async () => {
+  const ids = await listWithLiveSession({ stateOf: () => ({ blank: false, lastPromptAt: 1 }) })
+  assert.deepStrictEqual(ids, ['77777777-7777-4777-8777-777777777777'])
+})
+
+test('list degrades to visible when the projection service is absent', async () => {
+  const ids = await listWithLiveSession({ stateOf: undefined })
+  assert.deepStrictEqual(ids, ['77777777-7777-4777-8777-777777777777'], 'a missing projection must never hide a real conversation')
+})
+
+test('list degrades to visible when the projection read throws or is malformed', async () => {
+  const throwing = await listWithLiveSession({ stateOf: () => { throw new Error('cannot prepare session') } })
+  assert.deepStrictEqual(throwing, ['77777777-7777-4777-8777-777777777777'])
+  const malformed = await listWithLiveSession({ stateOf: () => 'not-an-object' })
+  assert.deepStrictEqual(malformed, ['77777777-7777-4777-8777-777777777777'])
+})
+
+test('list keeps a running session even when the projection reports blank', async () => {
+  const ids = await listWithLiveSession({ stateOf: () => ({ blank: true }), running: true })
+  assert.deepStrictEqual(ids, ['77777777-7777-4777-8777-777777777777'])
+})

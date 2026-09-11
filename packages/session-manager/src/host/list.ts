@@ -38,6 +38,17 @@ interface WorkspaceRegistryFace {
   list?(): ReadonlyArray<{ path?: string; title?: string }>
 }
 
+/**
+ * Live projection registry face (`ctx.sessionProjections`). The harness folds
+ * `sessionListMetadata` (its own `blank` signal) over every committed event,
+ * so this is the supported read for a fact the manager used to recompute from
+ * the raw log.
+ */
+interface SessionProjectionsFace {
+  /** Current folded host state for one registered unit; `undefined` when unregistered. */
+  stateOf?(session: unknown, key: 'sessionListMetadata'): unknown
+}
+
 /** One cell of a projection-cache record (proved field-wise). */
 interface ProjCacheRow {
   val?: unknown
@@ -144,6 +155,7 @@ export async function listAll(ctx: Context): Promise<ListedSession[]> {
   const sessions = ctx.get('sessions') as SessionsFace | undefined
   const proj = ctx.get('storageDomain') as StorageDomainFace | undefined
   const workspace = ctx.get('workspaceRegistry') as WorkspaceRegistryFace | undefined
+  const projections = ctx.get('sessionProjections') as SessionProjectionsFace | undefined
   const archived = new Set((workspace?.archivedSessionIds ?? []).map(String))
   // cwd → editable workspace title, so the group label follows a rename. A
   // directory that is not a registered workspace falls back to its basename.
@@ -165,22 +177,50 @@ export async function listAll(ctx: Context): Promise<ListedSession[]> {
   // Deletion still covers subagents: the recursive walk reads the corpus.
   return records
     .filter(record => record.header.origin !== 'subagent')
-    .filter(record => !isBlankDraft(sessions?.get(String(record.header.id)), agents?.get(String(record.header.id))))
+    .filter(record => !isBlankDraft(String(record.header.id), sessions, agents, projections))
     .map(record => rowOf(record, agents, proj, archived, projectTitles))
 }
 
 /**
- * True for a live, idle store entry whose FULL log has never opened a turn —
- * the harness's own `blank` signal. The full log matters: a fork inherits its
- * parent's turns, so its own-events suffix may have no `turn/start` even
- * though the conversation is real. A fresh draft's log carries setup events,
- * so the event count alone cannot tell blank from active.
+ * True for a live, idle store entry whose log has never opened a turn — the
+ * harness's own `blank` signal, read from the `sessionListMetadata`
+ * projection rather than recomputed from the raw log.
+ *
+ * The projection folds the FULL log, so a fork — which inherits its parent's
+ * turns — is judged on the inherited prefix too, exactly as this check
+ * requires: a fork's own suffix may carry no `turn/start` while the
+ * conversation is real. `ctx.sessionProjections.stateOf` materializes at the
+ * live cursor, so the value never trails the session (the durable
+ * `session_projcache` is throttled write-behind and must not be used here).
+ *
+ * An unavailable projection (service absent, unit unregistered, or a hostile
+ * value) degrades to "visible": hiding a real conversation is worse than
+ * showing a draft.
  */
-function isBlankDraft(session: unknown, agent: { status?: string } | undefined): boolean {
+function isBlankDraft(
+  id: string,
+  sessions: SessionsFace | undefined,
+  agents: AgentsFace | undefined,
+  projections: SessionProjectionsFace | undefined,
+): boolean {
+  const session = sessions?.get(id)
   if (session === undefined) return false
-  if (agent?.status === 'running') return false
-  const events = (session as { snapshotEvents?(): ReadonlyArray<{ type?: string }> }).snapshotEvents?.() ?? []
-  return !events.some(event => event.type === 'turn/start')
+  if (agents?.get(id)?.status === 'running') return false
+  return asRecord(stateOfSafe(projections, session))?.blank === true
+}
+
+/**
+ * Read one unit's live state without letting a materialization fault escape.
+ * `stateOf` folds the session log, so a session the registry cannot prepare
+ * throws; the list must degrade per row (matching this module's guarded-read
+ * contract) rather than fail the whole listing.
+ */
+function stateOfSafe(projections: SessionProjectionsFace | undefined, session: unknown): unknown {
+  try {
+    return projections?.stateOf?.(session, 'sessionListMetadata')
+  } catch {
+    return undefined
+  }
 }
 
 /**

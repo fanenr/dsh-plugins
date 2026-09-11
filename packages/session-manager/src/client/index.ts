@@ -4,7 +4,7 @@
  * Registers the Sessions section in the settings panel
  * (`settings.section` slot): session table, preview drawer, archive toggle,
  * and permanent delete. All Host interactions ride the authenticated
- * `/session-manager` channel (bridge.ts).
+ * `/api/session-manager` route (bridge.ts).
  *
  * @module dsh-session-manager/client
  */
@@ -20,8 +20,10 @@ import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { adoptStyles, dict, NS } from './i18n'
 import { makeSessionManagerView } from './view'
 
-/** Client bundle id, stamped onto owned style tags for HMR bookkeeping. */
+/** Cordis plugin name and client bundle id, stamped onto owned style tags for HMR bookkeeping. */
 const PLUGIN_ID = 'dsh-session-manager'
+
+export const name = PLUGIN_ID
 
 /** Required services (the slot and locale shells). */
 export const inject = ['slots', 'locale']
@@ -40,10 +42,4 @@ export function apply(ctx: ClientContext): void {
       view,
     )
   })
-}
-
-module.exports = {
-  name: 'dsh-session-manager',
-  inject,
-  apply,
 }
