@@ -21,7 +21,8 @@ The page appears under **Settings → Sessions** and rides the authenticated
   this page toggles both directions.
 - **Permanent delete** — risk-confirmed, removes the session log directory,
   projection-cache row, and workspace accounting. Recursively deletes child
-  subagent sessions. Irreversible. Live sessions refuse deletion.
+  subagent sessions. Irreversible. A session that is live in the host refuses
+  deletion (see Safety).
 
 ## Install
 
@@ -39,10 +40,19 @@ Restart the profile after install.
 
 ## Safety
 
-- A live session refuses deletion — the harness keeps no public teardown path
-  for a live agent, so deleting its files would strand the running agent on a
-  ghost log. Stop the conversation (or restart the profile) and retry. A live
-  descendant subagent refuses the whole family's deletion the same way.
+- **A session that is live in the host refuses deletion.** Note that "live"
+  is not "running": dsh web resumes an agent the moment a session is opened
+  and never evicts it, so a session stays live for the life of the process
+  even when idle. Deleting its files would break every later append — the log
+  directory is only created by first materialization, so appends then fail
+  `ENOENT`. No RPC, button, or setting stops a live session: **restart
+  `dsh web`, then delete it before opening that conversation again.** The
+  refusal says which case applies; a running turn is aborted by that restart.
+- **A session whose write lease another dsh process holds refuses deletion.**
+  The in-process store cannot see a sibling process, so the delete claims the
+  session's cross-process write lease (the same kernel lock the harness uses)
+  before removing anything, and holds it across the removal. This closes the
+  window where deleting under a live sibling writer would tear its log.
 - Blank drafts (live, idle sessions whose log has never opened a turn) are
   hidden from the manager list, mirroring the sidebar: they are the
   provisional New Session placeholders, and they have no reliable delete
@@ -50,6 +60,8 @@ Restart the profile after install.
   and can be deleted normally after a profile restart.
 - A session whose log directory cannot be found refuses to delete rather
   than silently leaving a ghost.
+- A corrupt or unreadable log stays deletable: only an ownership conflict
+  refuses, and deleting a broken log is exactly the remedy.
 
 ## Develop
 

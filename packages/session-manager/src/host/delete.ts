@@ -4,13 +4,23 @@
  * directory, the projection-cache domain, and workspace accounting (table +
  * archive set).
  *
- * Live sessions refuse deletion up front: the harness keeps no public
- * teardown path for a live agent, so removing a live session's files would
- * strand the running agent on a ghost log. Only sessions without a live
- * store entry — and whose subagent children are likewise not live — can be
- * deleted. This includes blank drafts: they live in the store until the
- * profile restarts, so the manager list hides them (like the sidebar does)
- * instead of offering a delete that would refuse.
+ * A session refuses deletion up front on two independent grounds:
+ *
+ *  - A LIVE store entry cannot be removed. The harness discards the
+ *    `AgentHandle` it resumes, `AgentRegistry` has no eviction, and no RPC can
+ *    stop one, so an agent that has been opened stays live until the process
+ *    exits. Removing its files would strand it writing into a deleted
+ *    directory (every later append reopens the log by path and fails ENOENT —
+ *    the directory is only created by first materialization).
+ *  - A session whose write lease ANOTHER process holds is equally unsafe, and
+ *    the in-process store cannot see it. The kernel `flock` lease can, so the
+ *    delete claims it for the whole family and holds it through removal.
+ *
+ * Only an identity with no live store entry and a claimable write lease — and
+ * whose subagent children are likewise free — can be deleted. This includes
+ * blank drafts: they are live in the store until the profile restarts, so the
+ * manager list hides them (like the sidebar does) instead of offering a
+ * delete that would refuse.
  *
  * Failure policy: a log removal failure aborts before storage accounting is
  * touched, so a half-deleted session never falls out of its group. Storage
@@ -38,6 +48,10 @@ export interface DeleteHost {
   sessions?: {
     get(id: string): unknown
   }
+  /** ctx.get('agents'): live agent registry, for the running/idle distinction. */
+  agents?: {
+    get(id: string): { status?: string } | undefined
+  }
   /** ctx.get('sessionQuery'): corpus listing. */
   sessionQuery?: {
     listSessions?(signal?: AbortSignal): Promise<SessionRecord[]>
@@ -63,6 +77,19 @@ export interface DeleteHost {
     findDir(sessionId: string): string | null
     /** Recursively remove one directory. */
     removeDir(dir: string): void
+  }
+  /**
+   * Cross-process write-ownership probe (DI seam). Absent, deletion falls back
+   * to the in-process liveness check alone.
+   */
+  writeLease?: {
+    /**
+     * Claim exclusive write ownership of one session's durable artifact.
+     * @param sessionId - session identity to claim.
+     * @returns a disposer releasing the claim.
+     * @throws when another handle (in this or another process) already holds it.
+     */
+    claim(sessionId: string): Promise<() => Promise<void>>
   }
 }
 
@@ -187,9 +214,9 @@ function tableEntriesSafe(table: { entries?(): IterableIterator<[string, unknown
  * Delete one logical session and its descendants.
  *
  * @throws before any removal when the id is not a uuid spelling, when any id
- *   in the family is live in the session store, or when a log directory
- *   cannot be found or fully removed — a half-deleted session must never fall
- *   out of its group.
+ *   in the family is live in the session store, when another process holds a
+ *   write lease on any of them, or when a log directory cannot be found or
+ *   fully removed — a half-deleted session must never fall out of its group.
  */
 export async function deleteSession(host: DeleteHost, rootId: string): Promise<DeleteOutcome[]> {
   if (!/^(session-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rootId)) {
@@ -197,27 +224,101 @@ export async function deleteSession(host: DeleteHost, rootId: string): Promise<D
   }
   const records = await familyOf(host)
   const ids = descendantsOf(records, rootId)
-  // The whole family must be non-live before anything is removed — a live
-  // session refuses deletion, and a partial walk would orphan its children.
-  // The message names the ROOT (visible in the UI), never the live child:
+  // The whole family must be free before anything is removed — a live session
+  // refuses deletion, and a partial walk would orphan its children. The
+  // message names the ROOT (visible in the UI), never the live child:
   // subagent sessions don't surface in the sidebar, so a child id here would
   // be an unactionable address.
   for (const id of ids) {
     if (host.sessions?.get(id) !== undefined) {
       throw new Error(id === rootId
-        ? `session "${rootId}" is live; stop the conversation and retry`
-        : `session "${rootId}" has a live subagent; wait for its conversation to end and retry`)
+        ? liveMessage(host, rootId)
+        : `session "${rootId}" has a subagent that is still live in this host; restart dsh web and delete it before opening that subagent again`)
     }
   }
-  const outcomes: DeleteOutcome[] = []
-  for (const id of ids) {
-    outcomes.push(await deleteOne(host, id))
+  // Claim the whole family's write lease BEFORE removing anything, and hold
+  // every claim until the last id is gone: the in-process store cannot see a
+  // sibling process writing this session, so the kernel lock is the only
+  // cross-process exclusion. An ownership conflict aborts with nothing removed.
+  const releases = await claimFamily(host, ids, rootId)
+  try {
+    const outcomes: DeleteOutcome[] = []
+    for (const id of ids) {
+      outcomes.push(await deleteOne(host, id))
+    }
+    return outcomes
+  } finally {
+    for (const release of releases) {
+      try {
+        await release()
+      } catch { /* the files are already gone; a lock-release fault is not actionable here */ }
+    }
   }
-  return outcomes
 }
 
 /**
- * Remove one non-live identity: remove its log directory (a missing or
+ * Build the refusal for a session that is still live in this host. This is
+ * deliberately NOT "running": the host resumes an agent when a session is
+ * opened and never evicts it, so an idle session stays live for the life of
+ * the process and deleting its files would break every later append. The text
+ * is actionable — no RPC, button, or setting can stop a live session, so
+ * restarting the host is the only way out — and it distinguishes a turn that
+ * is actually executing, because a restart aborts it.
+ */
+function liveMessage(host: DeleteHost, rootId: string): string {
+  const running = host.agents?.get(rootId)?.status === 'running'
+  return running
+    ? `session "${rootId}" is running; restarting dsh web aborts that turn — do it, then delete the session`
+    : `session "${rootId}" is live in this host (dsh web keeps every session it has opened until restart); restart dsh web, then delete it before opening that conversation again`
+}
+
+/**
+ * Claim every id's write lease, releasing the ones already taken when an id is
+ * genuinely owned elsewhere, so a refused delete holds nothing.
+ *
+ * ONLY an ownership conflict refuses. Every other claim failure means the
+ * backend could not hand back a usable handle — a missing log, a corrupt or
+ * unsupported artifact, an I/O fault — and in each of those cases deleting the
+ * file is the remedy, not a hazard, so the walk proceeds without a lease for
+ * that id (deleteOne owns the resulting diagnosis, e.g. "no log directory").
+ * The backend parses the artifact only AFTER taking the kernel lock, so a
+ * corruption failure also proves no other process holds the session.
+ */
+async function claimFamily(
+  host: DeleteHost,
+  ids: string[],
+  rootId: string,
+): Promise<Array<() => Promise<void>>> {
+  const claim = host.writeLease?.claim
+  if (claim === undefined) return []
+  const releases: Array<() => Promise<void>> = []
+  for (const id of ids) {
+    let release: () => Promise<void>
+    try {
+      release = await claim(id)
+    } catch (error) {
+      if (!isAlreadyOwned(error)) continue
+      for (const unwind of releases) {
+        try {
+          await unwind()
+        } catch { /* best-effort unwind; the claim failure is the actionable one */ }
+      }
+      throw new Error(id === rootId
+        ? `session "${rootId}" is being written by another dsh process; stop that process and retry`
+        : `session "${rootId}" has a subagent being written by another dsh process; stop that process and retry`)
+    }
+    releases.push(release)
+  }
+  return releases
+}
+
+/** Whether a claim failed because a write handle already owns the session. */
+function isAlreadyOwned(error: unknown): boolean {
+  return (error as { name?: unknown } | null)?.name === 'SessionAlreadyOwnedError'
+}
+
+/**
+ * Remove one live-free identity: remove its log directory (a missing or
  * re-materialized directory refuses the delete), then strip storage
  * accounting best-effort.
  */

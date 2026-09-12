@@ -84,13 +84,29 @@ export function findLogDir(logs: LogDirHost, sessionId: string): string | null {
 function deleteHostOf(ctx: Context): DeleteHost {
   const logs = nodeLogs(dshHomePath('sessions'))
   const sessions = ctx.get('sessions') as { get(id: string): unknown } | undefined
+  const agents = ctx.get('agents') as { get(id: string): { status?: string } | undefined } | undefined
+  const persistence = ctx.get('sessionPersistence') as {
+    open(id: string, access: 'write'): Promise<{ close(): Promise<void> }>
+  } | undefined
   return {
     sessions: { get: (id) => sessions?.get(id) },
+    agents: { get: (id) => agents?.get(id) },
     sessionQuery: ctx.get('sessionQuery') as DeleteHost['sessionQuery'],
     storageDomain: ctx.get('storageDomain') as DeleteHost['storageDomain'],
     logs: {
       findDir: id => findLogDir(logs, id),
       removeDir: dir => logs.rm(dir),
+    },
+    // `open(..., 'write')` is the harness's own single-writer claim: it takes
+    // the same in-process slot `sessionPersistence` routes live events through
+    // AND the cross-process kernel lease, so a sibling dsh writing this session
+    // rejects with SessionAlreadyOwnedError instead of being silently deleted
+    // under. Closing it releases both; the caller holds it across removal.
+    writeLease: persistence === undefined ? undefined : {
+      claim: async (sessionId: string) => {
+        const handle = await persistence.open(sessionId, 'write')
+        return () => handle.close()
+      },
     },
   }
 }

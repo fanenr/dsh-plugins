@@ -140,7 +140,7 @@ test('deleteSession fails before accounting when the log directory is missing', 
   assert.strictEqual(cache.map.size, 1)
 })
 
-test('deleteSession refuses a live session before any removal', async () => {
+test('deleteSession refuses a session that is live in the host, before any removal', async () => {
   const logs = makeLogs(['/root/session-33333333-3333-4333-8333-333333333333'])
   const cache = makeTable({})
   const host = {
@@ -151,14 +151,36 @@ test('deleteSession refuses a live session before any removal', async () => {
   }
   await assert.rejects(
     () => deleteSession(host, '33333333-3333-4333-8333-333333333333'),
-    /is live; stop the conversation and retry/,
+    // The refusal must name the only thing that works — restarting the host.
+    // No RPC, button, or setting can stop a live session.
+    /is live in this host .*restart dsh web/,
   )
   // Nothing was touched: log dir and cache rows must survive the refusal.
   assert.strictEqual(logs.removed.length, 0)
   assert.strictEqual(cache.map.size, 0)
 })
 
-test('deleteSession refuses when a descendant subagent is live', async () => {
+test('deleteSession distinguishes a running session from an idle-but-live one', async () => {
+  const id = '33333333-3333-4333-8333-333333333333'
+  const make = agents => ({
+    logs: makeLogs([`/root/session-${id}`]),
+    sessions: { get: key => (key === id ? {} : undefined) },
+    agents,
+    sessionQuery: { listSessions: async () => [record(id)] },
+  })
+  // Running: a turn is executing, and restarting is what aborts it.
+  await assert.rejects(
+    () => deleteSession(make({ get: () => ({ status: 'running' }) }), id),
+    /is running; restarting dsh web aborts that turn/,
+  )
+  // Idle: live all the same (the host never evicts), so restart is still the move.
+  await assert.rejects(
+    () => deleteSession(make({ get: () => ({ status: 'idle' }) }), id),
+    /is live in this host/,
+  )
+})
+
+test('deleteSession refuses when a descendant subagent is live in the host', async () => {
   const logs = makeLogs([
     '/root/session-44444444-4444-4444-8444-444444444444',
     '/root/session-55555555-5555-4555-8555-555555555555',
@@ -173,9 +195,120 @@ test('deleteSession refuses when a descendant subagent is live', async () => {
   }
   await assert.rejects(
     () => deleteSession(host, '44444444-4444-4444-8444-444444444444'),
-    /session "44444444-4444-4444-8444-444444444444" has a live subagent; wait for its conversation to end and retry/,
+    /session "44444444-4444-4444-8444-444444444444" has a subagent that is still live in this host/,
   )
   assert.strictEqual(logs.removed.length, 0)
+})
+
+test('deleteSession claims the write lease across the whole family and releases it', async () => {
+  const root = '88888888-8888-4888-8888-888888888888'
+  const child = '99999999-9999-4999-8999-999999999999'
+  const logs = makeLogs([`/root/session-${root}`, `/root/session-${child}`])
+  const claimed = []
+  const released = []
+  const host = {
+    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
+    sessions: { get: () => undefined },
+    sessionQuery: { listSessions: async () => [record(root), record(child, root, 'subagent')] },
+    writeLease: {
+      claim: async (id) => { claimed.push(id); return async () => { released.push(id) } },
+    },
+  }
+  const outcomes = await deleteSession(host, root)
+  assert.deepStrictEqual(claimed, [root, child], 'every family id must be claimed before removal')
+  assert.deepStrictEqual(released, [root, child], 'every claim must be released')
+  assert.strictEqual(outcomes.length, 2)
+  assert.strictEqual(logs.removed.length, 2)
+})
+
+test('deleteSession aborts before removal when another process holds the lease', async () => {
+  const id = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa'
+  const logs = makeLogs([`/root/session-${id}`])
+  const released = []
+  const host = {
+    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
+    sessions: { get: () => undefined },
+    sessionQuery: { listSessions: async () => [record(id)] },
+    writeLease: {
+      // The harness's own wording for a taken write handle. The in-process
+      // store is empty, so only this claim can catch a sibling process.
+      claim: async () => {
+        const error = new Error('session is already owned by an active write handle')
+        error.name = 'SessionAlreadyOwnedError'
+        throw error
+      },
+    },
+  }
+  await assert.rejects(
+    () => deleteSession(host, id),
+    /is being written by another dsh process/,
+  )
+  assert.strictEqual(logs.removed.length, 0, 'nothing may be removed once the lease is refused')
+  assert.deepStrictEqual(released, [])
+})
+
+test('deleteSession still deletes when the log is corrupt (non-ownership claim failure)', async () => {
+  // A corrupt log is exactly what a user needs to delete. The backend parses
+  // the artifact only AFTER taking the kernel lock, so a corruption failure
+  // also proves no other process holds it: the walk must proceed without a
+  // lease rather than refusing on the backend's parse error.
+  const id = 'eeeeeeee-1111-4111-8111-eeeeeeeeeeee'
+  const logs = makeLogs([`/root/session-${id}`])
+  const host = {
+    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
+    sessions: { get: () => undefined },
+    sessionQuery: { listSessions: async () => [record(id)] },
+    writeLease: {
+      claim: async () => {
+        const error = new Error(`stored session "${id}" is corrupt`)
+        error.name = 'SessionPersistenceCorruptionError'
+        throw error
+      },
+    },
+  }
+  const outcomes = await deleteSession(host, id)
+  assert.strictEqual(outcomes.length, 1)
+  assert.strictEqual(logs.removed.length, 1, 'a corrupt session must remain deletable')
+})
+
+test('deleteSession unwinds earlier claims when a later family member is leased elsewhere', async () => {
+  const root = 'bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb'
+  const child = 'cccccccc-1111-4111-8111-cccccccccccc'
+  const logs = makeLogs([`/root/session-${root}`, `/root/session-${child}`])
+  const released = []
+  const host = {
+    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
+    sessions: { get: () => undefined },
+    sessionQuery: { listSessions: async () => [record(root), record(child, root, 'subagent')] },
+    writeLease: {
+      claim: async (id) => {
+        if (id === child) { const e = new Error("already owned"); e.name = "SessionAlreadyOwnedError"; throw e }
+        return async () => { released.push(id) }
+      },
+    },
+  }
+  await assert.rejects(() => deleteSession(host, root), /has a subagent being written by another dsh process/)
+  assert.deepStrictEqual(released, [root], 'the root claim must be released when the child refuses')
+  assert.strictEqual(logs.removed.length, 0)
+})
+
+test('deleteSession proceeds when a claim reports the log is already absent', async () => {
+  // The real backend raises not-found from open(); deleteOne owns that
+  // refusal, so the claim step must not pre-empt it with a confusing lease error.
+  const id = 'dddddddd-1111-4111-8111-dddddddddddd'
+  const host = {
+    logs: makeLogs([]),
+    sessions: { get: () => undefined },
+    sessionQuery: { listSessions: async () => [record(id)] },
+    writeLease: {
+      claim: async () => {
+        const error = new Error(`session "${id}" not found`)
+        error.name = 'SessionPersistenceNotFoundError'
+        throw error
+      },
+    },
+  }
+  await assert.rejects(() => deleteSession(host, id), /has no log directory; refusing a half-delete/)
 })
 
 test('findLogDir scans buckets for both id spellings', () => {
