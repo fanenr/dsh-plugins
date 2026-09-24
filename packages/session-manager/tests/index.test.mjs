@@ -9,6 +9,7 @@ const {
   idVariants,
   findLogDir,
   previewOf,
+  setArchived,
 } = await import('../lib/index.js')
 
 /** Minimal SessionRecord for the corpus fake. */
@@ -564,4 +565,92 @@ test('list degrades to visible when the projection read throws or is malformed',
 test('list keeps a running session even when the projection reports blank', async () => {
   const ids = await listWithLiveSession({ stateOf: () => ({ blank: true }), running: true })
   assert.deepStrictEqual(ids, ['77777777-7777-4777-8777-777777777777'])
+})
+
+/** Build a ctx whose storageDomain serves a workspace global the write REPLACES.
+ * The domain's `set` stores the whole value, so the fake must replace rather
+ * than merge: an `Object.assign` would keep keys the write dropped and hide
+ * exactly the field loss these tests exist to catch. */
+function archiveCtx(globalState, options = {}) {
+  const writes = []
+  const read = () => globalState.value
+  const ctx = {
+    get: name => name === 'storageDomain'
+      ? {
+        get: domain => domain === 'workspace'
+          ? {
+            global: {
+              get: read,
+              set: async value => {
+                writes.push(structuredClone(value))
+                globalState.value = value
+              },
+            },
+          }
+          : undefined,
+      }
+      : options.registry === undefined ? undefined : (name === 'workspaceRegistry' ? options.registry : undefined),
+  }
+  return { ctx, writes }
+}
+
+test('archiving preserves workspace-global fields this plugin does not model', async () => {
+  // defaultWorkspaceId and pinnedSessionIds are real 0.1.7 fields. Rebuilding
+  // the global from a known-field template silently erases them, and the
+  // domain schema defaults a missing pinnedSessionIds to [] — so the loss is
+  // invisible without asserting it here.
+  const globalState = { value: {
+    initialized: true,
+    defaultWorkspaceId: 'ws-main',
+    workspaceIds: ['ws-main', 'ws-side'],
+    archivedSessionIds: ['old-1'],
+    pinnedSessionIds: ['pin-a', 'pin-b', 'pin-c'],
+    pendingMutation: { operation: 'create', workspaceId: 'ws-side' },
+  } }
+  const { ctx, writes } = archiveCtx(globalState)
+
+  const result = await setArchived(ctx, 'new-x', true)
+
+  assert.deepStrictEqual(result.archivedSessionIds, ['old-1', 'new-x'])
+  assert.strictEqual(globalState.value.defaultWorkspaceId, 'ws-main', 'the default workspace must survive')
+  assert.deepStrictEqual(globalState.value.pinnedSessionIds, ['pin-a', 'pin-b', 'pin-c'], 'unrelated pins must survive')
+  assert.deepStrictEqual(globalState.value.pendingMutation, { operation: 'create', workspaceId: 'ws-side' },
+    'the recoverable mutation marker must survive')
+  assert.strictEqual(writes.length, 1)
+  assert.strictEqual(writes[0].workspaceIds.length, 2, 'workspace accounting must survive')
+})
+
+test('archiving drops only the archived session own pin', async () => {
+  // Pinning and archival are mutually exclusive: the official archiveSession
+  // filters the id out of pinnedSessionIds and unarchiveSession never restores it.
+  const globalState = { value: {
+    initialized: true,
+    workspaceIds: [],
+    archivedSessionIds: [],
+    pinnedSessionIds: ['pin-a', 'pin-b', 'pin-c'],
+  } }
+  const { ctx } = archiveCtx(globalState)
+
+  await setArchived(ctx, 'pin-b', true)
+  assert.deepStrictEqual(globalState.value.pinnedSessionIds, ['pin-a', 'pin-c'])
+
+  await setArchived(ctx, 'pin-b', false)
+  assert.deepStrictEqual(globalState.value.pinnedSessionIds, ['pin-a', 'pin-c'],
+    'unarchiving must not invent a pin back')
+  assert.deepStrictEqual(globalState.value.archivedSessionIds, [])
+})
+
+test('archiving a pre-0.1.7 record does not invent a pin field', async () => {
+  const globalState = { value: { initialized: true, workspaceIds: [], archivedSessionIds: [] } }
+  const { ctx } = archiveCtx(globalState)
+
+  await setArchived(ctx, 'new-x', true)
+  assert.strictEqual(Object.hasOwn(globalState.value, 'pinnedSessionIds'), false,
+    'an unrelated write must not materialize a field the record never carried')
+  assert.deepStrictEqual(globalState.value.archivedSessionIds, ['new-x'])
+})
+
+test('archiving reports unavailable instead of writing when the domain is absent', async () => {
+  const ctx = { get: () => undefined }
+  await assert.rejects(() => setArchived(ctx, 'new-x', true), /no workspace storage domain/)
 })

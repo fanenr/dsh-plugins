@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session manager",
+    "description": "Manage every session of this profile from one page: preview conversations, toggle archive, and permanently delete sessions (recursively)."
+  }
+}

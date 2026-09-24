@@ -13,6 +13,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { existsSync, readdirSync, rmSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import { asRecord, asString } from './host/parsing.ts'
 import { listAll, previewOf, rawEventsOf } from './host/list.ts'
 import { setArchived } from './host/store.ts'
@@ -33,6 +34,7 @@ export const inject: string[] = []
 export { deleteSession, descendantsOf, idVariants }
 export { groupRowsByProject } from './shared/group.ts'
 export { previewOf } from './host/list.ts'
+export { setArchived } from './host/store.ts'
 export type { DeleteHost }
 
 /** Resolve the harness home the same way the base bundle does. */
@@ -176,7 +178,7 @@ function watchRoute(ctx: Context): void {
             // the session stays in the sidebar until the next full list pull,
             // and workspace mutations make it surface under Ungrouped.
             for (const outcome of outcomes) {
-              ctx.emit('api-session/removed', outcome.sessionId as never)
+              ctx.emit('api-session/removed', outcome.sessionId as SessionId)
             }
             return { ok: true, value: { outcomes } }
           }
