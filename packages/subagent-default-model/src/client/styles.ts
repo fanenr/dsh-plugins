@@ -1,75 +1,17 @@
 export const STYLE_ID = 'dsh-sdm-style'
 
 export const cssText = `
-.dsh_sdm_card {
-  border: 0.5px solid var(--dsw-alias-border-l4);
-  background: var(--dsw-alias-bg-layer-3);
-  border-radius: 16px;
-  list-style: none;
-  transition: border-color 0.16s, background 0.16s;
-}
-.dsh_sdm_card:hover {
-  border-color: var(--dsw-alias-label-dimmed);
-}
-.dsh_sdm_cardOpen {
-  background: var(--dsw-alias-bg-layer-2);
-  border-color: var(--dsw-alias-label-dimmed);
-}
-.dsh_sdm_header {
-  appearance: none;
-  width: 100%;
-  font: inherit;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  background: 0 0;
-  border: 0;
-  border-radius: 12px;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
-  display: flex;
-}
-.dsh_sdm_header:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: -2px;
-}
-.dsh_sdm_headText {
+/*
+ * The Plugins page owns the card chrome (frame, title, icon, disclosure), so
+ * this stylesheet only dresses the entry's own controls inside that frame.
+ */
+.dsh_sdm_page {
   flex-direction: column;
-  flex: 1;
-  gap: 4px;
-  min-width: 0;
   display: flex;
-}
-.dsh_sdm_name {
-  color: var(--dsw-alias-label-primary);
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-.dsh_sdm_description {
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 13px;
-  line-height: 1.5;
 }
 .dsh_sdm_chevron {
   color: var(--dsw-alias-label-tertiary);
   flex: none;
-  transition: transform 0.16s;
-}
-.dsh_sdm_chevronOpen {
-  transform: rotate(180deg);
-}
-.dsh_sdm_pending {
-  color: var(--dsw-alias-label-tertiary);
-  flex: none;
-  font-size: 12px;
-  line-height: 1.5;
-}
-.dsh_sdm_body {
-  border-top: 0.5px solid var(--dsw-alias-border-l2);
-  margin: 0 16px;
-  padding: 4px 0 8px;
 }
 .dsh_sdm_muted {
   color: var(--dsw-alias-label-tertiary);

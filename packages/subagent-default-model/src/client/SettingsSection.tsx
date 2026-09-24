@@ -1,7 +1,10 @@
 import {
-  useCallback, useEffect, useMemo, useRef, useSyncExternalStore, useState, type ReactElement,
+  useCallback, useEffect, useMemo, useSyncExternalStore, useState, type ReactElement,
 } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+// Type-only: pulls the Plugins page's SlotMap merge (the 'plugins.item' entry),
+// whose owner share carries `view` and the Host-supplied `form`.
+import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
@@ -10,13 +13,23 @@ import { IconChevronDownOutlineRegular, Menu } from '@deepseek-ai/dsh-client-ui-
 import { NS } from './locales.ts'
 import type { SubagentDefaultModelSettings } from './index.ts'
 
-/** Injected business face: the shared configuration form plus the catalog loader. */
+/**
+ * Injected business face: the shared configuration form plus the catalog loader.
+ *
+ * The form is injected as `configForm`, never `form`: the Plugins page's owner
+ * share already carries a `form` of its own (the host-supplied
+ * {@link ConfigPageForm}), and owner props are spread last, so an injected
+ * `form` would be silently replaced by it on the page view.
+ */
 export interface SubagentModelInjected {
-  form: ConfigForm<SubagentDefaultModelSettings>
+  configForm: ConfigForm<SubagentDefaultModelSettings>
   loadCatalog: () => Promise<ModelCatalog>
 }
 
-/** Card props: owner share is empty for plugin cards. */
+/**
+ * Card props: the Plugins page's owner share (`view`, plus the form it renders
+ * in `page`) + the injected business face + the locale seat.
+ */
 export type SubagentModelCardProps =
   PropsRuntime<'plugins.item'>
   & InjectFace<SubagentModelInjected>
@@ -50,14 +63,30 @@ function modelRowLabel(groups: readonly ModelProviderGroup[], provider: string, 
   return `${group?.name ?? provider} · ${entry?.name ?? model}`
 }
 
-export function SubagentModelCard({ t, form, loadCatalog }: SubagentModelCardProps): ReactElement {
-  const [open, setOpen] = useState(false)
+export function SubagentModelCard(props: SubagentModelCardProps): ReactElement {
+  const { t, configForm, loadCatalog, view } = props
+  // The Plugins page draws the card head — title, description, and the
+  // disclosure — and asks this entry for one of two views. `summary` is the
+  // one-liner the card head shows; `page` is the form on the detail page.
+  if (view === 'summary') return <>{t('desc')}</>
+  return <SubagentModelPage t={t} form={configForm} loadCatalog={loadCatalog} />
+}
+
+/**
+ * The `page` view: this entry's controls on the Plugins detail page.
+ * @param props - the locale seat, the shared form, and the catalog loader.
+ * @returns the staged form.
+ */
+function SubagentModelPage({ t, form, loadCatalog }: {
+  t: SubagentModelCardProps['t']
+  form: ConfigForm<SubagentDefaultModelSettings>
+  loadCatalog: () => Promise<ModelCatalog>
+}): ReactElement {
   const [modelOpen, setModelOpen] = useState(false)
   const [effortOpen, setEffortOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [failed, setFailed] = useState(false)
   const [catalog, setCatalog] = useState<CatalogState>({ status: 'loading' })
-  const saveStarted = useRef(false)
 
   const snapshot = useSyncExternalStore(
     useCallback((listener) => form.subscribe(listener), [form]),
@@ -68,15 +97,6 @@ export function SubagentModelCard({ t, form, loadCatalog }: SubagentModelCardPro
   // selection standing while the card flags it and the mirror stays the
   // source of truth for what is stored.
   const [draft, setDraft] = useState<SubagentDefaultModelSettings | undefined>(undefined)
-  useEffect(() => {
-    if (saving) {
-      saveStarted.current = true
-      return
-    }
-    if (!saveStarted.current) return
-    saveStarted.current = false
-    if (!failed) setOpen(false)
-  }, [saving, failed])
 
   const value = draft ?? stored
   const provider = value?.provider ?? ''
@@ -92,11 +112,10 @@ export function SubagentModelCard({ t, form, loadCatalog }: SubagentModelCardPro
     && (draft.reasoningEffort ?? '') === (stored.reasoningEffort ?? '')
   const pending = draft !== undefined && !draftSameAsStored
 
-  // Fetch the catalog on every expand: dsh hot-reloads adapter/model lists
-  // (`llm/adapters-updated`), so a cached list could be stale across sessions.
-  // One RPC per expand is negligible on a settings page.
+  // Load the catalog once when the page opens: dsh hot-reloads adapter/model
+  // lists, so the fetch is repeated per page visit rather than cached across
+  // sessions. One RPC per visit is negligible on a settings page.
   useEffect(() => {
-    if (!open) return
     let cancelled = false
     setCatalog({ status: 'loading' })
     void loadCatalog()
@@ -109,7 +128,7 @@ export function SubagentModelCard({ t, form, loadCatalog }: SubagentModelCardPro
         })
       })
     return () => { cancelled = true }
-  }, [open, loadCatalog])
+  }, [loadCatalog])
 
   const groups = catalog.status === 'ready' ? catalog.catalog.groups : []
   const failures = catalog.status === 'ready'
@@ -230,118 +249,100 @@ export function SubagentModelCard({ t, form, loadCatalog }: SubagentModelCardPro
   const blocked = !ready || !pending || saving
 
   return (
-    <li className={`dsh_sdm_card${open ? ' dsh_sdm_cardOpen' : ''}`}>
-      <button
-        type="button"
-        className="dsh_sdm_header"
-        aria-expanded={open}
-        onClick={() => setOpen(value => !value)}
-      >
-        <span className="dsh_sdm_headText">
-          <span className="dsh_sdm_name">{t('title')}</span>
-          <span className="dsh_sdm_description">{t('desc')}</span>
-        </span>
-        {pending ? <span className="dsh_sdm_pending">{t('unsaved')}</span> : null}
-        <IconChevronDownOutlineRegular className={`dsh_sdm_chevron${open ? ' dsh_sdm_chevronOpen' : ''}`} />
-      </button>
-
-      {open && (
-        <div className="dsh_sdm_body">
-          {statusText !== undefined && <p className="dsh_sdm_muted">{statusText}</p>}
-          {failures.length > 0 && (
-            <p className="dsh_sdm_muted">{t('partialFailure', { providers: failures.map(failure => failure.name).join('、') })}</p>
-          )}
-
-          {ready && (
-            <>
-              <div className="dsh_sdm_row">
-                <div className="dsh_sdm_rowText">
-                  <div className="dsh_sdm_rowTitle">{t('model')}</div>
-                </div>
-                <Menu
-                  open={modelOpen && !disabled && !saving}
-                  onClose={() => setModelOpen(false)}
-                  items={modelEntries}
-                  selectedId={routePresent ? currentRouteId : undefined}
-                  onSelect={(id) => { pickModel(id) }}
-                  align="end"
-                  portal
-                  anchor={(
-                    <button
-                      type="button"
-                      className="dsh_sdm_selector"
-                      aria-haspopup="menu"
-                      aria-expanded={modelOpen}
-                      disabled={disabled || saving || modelEntries.length <= 1}
-                      onClick={() => setModelOpen(value => !value)}
-                    >
-                      <span className="dsh_sdm_selectorText">{currentRouteLabel}</span>
-                      <IconChevronDownOutlineRegular className="dsh_sdm_chevron" />
-                    </button>
-                  )}
-                />
-              </div>
-
-              {currentRouteId !== BUILTIN_ID && (entry?.reasoning !== undefined || routeMissing) && (
-                <div className="dsh_sdm_row">
-                  <div className="dsh_sdm_rowText">
-                    <div className="dsh_sdm_rowTitle">{t('effort')}</div>
-                  </div>
-                  <Menu
-                    open={effortOpen && !disabled && !saving}
-                    onClose={() => setEffortOpen(false)}
-                    items={[
-                      { id: '', label: t('effortEmpty') },
-                      ...efforts.map(item => ({ id: item.id, label: item.name })),
-                    ]}
-                    selectedId={effort}
-                    onSelect={(id) => { pickEffort(id) }}
-                    align="end"
-                    portal
-                    anchor={(
-                      <button
-                        type="button"
-                        className="dsh_sdm_selector"
-                        aria-haspopup="menu"
-                        aria-expanded={effortOpen}
-                        disabled={disabled || saving || efforts.length === 0}
-                        onClick={() => setEffortOpen(value => !value)}
-                      >
-                        <span className="dsh_sdm_selectorText">
-                          {effort === ''
-                            ? t('effortEmpty')
-                            : efforts.find(item => item.id === effort)?.name ?? effort}
-                        </span>
-                        <IconChevronDownOutlineRegular className="dsh_sdm_chevron" />
-                      </button>
-                    )}
-                  />
-                </div>
-              )}
-            </>
-          )}
-
-          <div className="dsh_sdm_footer">
-            {failed ? <p className="dsh_sdm_failed" role="status">{t('saveError')}</p> : null}
-            <button
-              type="button"
-              className="dsh_sdm_discard"
-              disabled={!pending || saving}
-              onClick={discard}
-            >
-              {t('discard')}
-            </button>
-            <button
-              type="button"
-              className="dsh_sdm_save"
-              disabled={blocked}
-              onClick={save}
-            >
-              {t(saving ? 'saving' : 'save')}
-            </button>
-          </div>
-        </div>
+    <div className="dsh_sdm_page">
+      {statusText !== undefined && <p className="dsh_sdm_muted">{statusText}</p>}
+      {failures.length > 0 && (
+        <p className="dsh_sdm_muted">{t('partialFailure', { providers: failures.map(failure => failure.name).join('、') })}</p>
       )}
-    </li>
+
+      {ready && (
+        <>
+          <div className="dsh_sdm_row">
+            <div className="dsh_sdm_rowText">
+              <div className="dsh_sdm_rowTitle">{t('model')}</div>
+            </div>
+            <Menu
+              open={modelOpen && !disabled && !saving}
+              onClose={() => setModelOpen(false)}
+              items={modelEntries}
+              selectedId={routePresent ? currentRouteId : undefined}
+              onSelect={(id) => { pickModel(id) }}
+              align="end"
+              portal
+              anchor={(
+                <button
+                  type="button"
+                  className="dsh_sdm_selector"
+                  aria-haspopup="menu"
+                  aria-expanded={modelOpen}
+                  disabled={disabled || saving || modelEntries.length <= 1}
+                  onClick={() => setModelOpen(value => !value)}
+                >
+                  <span className="dsh_sdm_selectorText">{currentRouteLabel}</span>
+                  <IconChevronDownOutlineRegular className="dsh_sdm_chevron" />
+                </button>
+              )}
+            />
+          </div>
+
+          {currentRouteId !== BUILTIN_ID && (entry?.reasoning !== undefined || routeMissing) && (
+            <div className="dsh_sdm_row">
+              <div className="dsh_sdm_rowText">
+                <div className="dsh_sdm_rowTitle">{t('effort')}</div>
+              </div>
+              <Menu
+                open={effortOpen && !disabled && !saving}
+                onClose={() => setEffortOpen(false)}
+                items={[
+                  { id: '', label: t('effortEmpty') },
+                  ...efforts.map(item => ({ id: item.id, label: item.name })),
+                ]}
+                selectedId={effort}
+                onSelect={(id) => { pickEffort(id) }}
+                align="end"
+                portal
+                anchor={(
+                  <button
+                    type="button"
+                    className="dsh_sdm_selector"
+                    aria-haspopup="menu"
+                    aria-expanded={effortOpen}
+                    disabled={disabled || saving || efforts.length === 0}
+                    onClick={() => setEffortOpen(value => !value)}
+                  >
+                    <span className="dsh_sdm_selectorText">
+                      {effort === ''
+                        ? t('effortEmpty')
+                        : efforts.find(item => item.id === effort)?.name ?? effort}
+                    </span>
+                    <IconChevronDownOutlineRegular className="dsh_sdm_chevron" />
+                  </button>
+                )}
+              />
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="dsh_sdm_footer">
+        {failed ? <p className="dsh_sdm_failed" role="status">{t('saveError')}</p> : null}
+        <button
+          type="button"
+          className="dsh_sdm_discard"
+          disabled={!pending || saving}
+          onClick={discard}
+        >
+          {t('discard')}
+        </button>
+        <button
+          type="button"
+          className="dsh_sdm_save"
+          disabled={blocked}
+          onClick={save}
+        >
+          {t(saving ? 'saving' : 'save')}
+        </button>
+      </div>
+    </div>
   )
 }

@@ -45,17 +45,20 @@ async function loadCatalog(ctx: ClientContext): Promise<ModelCatalog> {
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => adoptStyles(PLUGIN_ID), 'dsh-subagent-default-model: stylesheet')
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-subagent-default-model: dictionaries')
-  const form: ConfigForm<SubagentDefaultModelSettings> = ctx.configForms.get<SubagentDefaultModelSettings>(NS)
+  const configForm: ConfigForm<SubagentDefaultModelSettings> = ctx.configForms.get<SubagentDefaultModelSettings>(NS)
   // The page exists exactly while the Host serves this entry: a deployment
   // that never composed the Host half shows no trace of it.
   ctx.effect(() => ctx.configForms.whileServed([NS], () => ctx.slots.inject('plugins.item', () => ctx.slots.register({
     name: 'plugins.item',
     id: NS,
-    order: 30,
+    // After the shipped cards (10/20/30/40) and the subagent page: a
+    // third-party entry must not take a tie with a built-in one, because a
+    // list-order tie falls back to registration sequence.
+    order: 50,
     label: () => ctx.locale.bind(NS)('title'),
     locale: NS,
     inject: (): SubagentModelInjected => ({
-      form,
+      configForm,
       loadCatalog: () => loadCatalog(ctx),
     }),
   }, SubagentModelCard))), 'dsh-subagent-default-model: page')
