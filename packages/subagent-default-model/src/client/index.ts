@@ -1,5 +1,6 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-// Type-only: pulls the Plugins page's SlotMap merge (the 'plugins.item' entry).
+// Type-only: pulls the Plugins page's SlotMap merge (the
+// 'plugins.bundle.config' entry), whose owner share carries `view`.
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 // Type-only: pulls the ctx.configForms Context merge and the ConfigForm face.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
@@ -42,20 +43,25 @@ async function loadCatalog(ctx: ClientContext): Promise<ModelCatalog> {
   return response.value
 }
 
+/**
+ * The bundle page exists exactly while the Host serves this entry: a deployment
+ * that never composed the Host half shows no trace of it.
+ *
+ * The registration is keyed by the bundle's package name and rides
+ * `plugins.bundle.config`, which the Plugins page renders on this bundle's own
+ * page between its description and its rows. `plugins.item` would list the
+ * entry in the Official group instead — that slot belongs to the official
+ * settings pages, one companion package per host-plane namespace.
+ */
+const BUNDLE_NAME = 'dsh-subagent-default-model'
+
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => adoptStyles(PLUGIN_ID), 'dsh-subagent-default-model: stylesheet')
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-subagent-default-model: dictionaries')
   const configForm: ConfigForm<SubagentDefaultModelSettings> = ctx.configForms.get<SubagentDefaultModelSettings>(NS)
-  // The page exists exactly while the Host serves this entry: a deployment
-  // that never composed the Host half shows no trace of it.
-  ctx.effect(() => ctx.configForms.whileServed([NS], () => ctx.slots.inject('plugins.item', () => ctx.slots.register({
-    name: 'plugins.item',
-    id: NS,
-    // After the shipped cards (10/20/30/40) and the subagent page: a
-    // third-party entry must not take a tie with a built-in one, because a
-    // list-order tie falls back to registration sequence.
-    order: 50,
-    label: () => ctx.locale.bind(NS)('title'),
+  ctx.effect(() => ctx.configForms.whileServed([NS], () => ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
+    name: 'plugins.bundle.config',
+    key: BUNDLE_NAME,
     locale: NS,
     inject: (): SubagentModelInjected => ({
       configForm,

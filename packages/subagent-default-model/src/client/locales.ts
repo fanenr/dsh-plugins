@@ -5,8 +5,6 @@ export type SubagentDefaultModelKey = keyof typeof zh
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
-  title: 'Subagent 默认模型',
-  desc: 'Subagent 委托使用的模型：选中即最高优先，内置跟随 dsh。',
   builtin: '内置',
   model: '模型',
   effort: '推理强度',
@@ -24,8 +22,6 @@ export const zh = {
 
 /** English dictionary. */
 export const en: typeof zh = {
-  title: 'Subagent default model',
-  desc: 'Model for subagent delegations: explicit wins, built-in defers to dsh.',
   builtin: 'Built-in',
   model: 'Model',
   effort: 'Reasoning effort',

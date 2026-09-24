@@ -9,11 +9,12 @@ import { createRequire } from 'node:module'
  * `window.__ModuleLoader__.load`, hand it a `require` shim, and drive the
  * factory's exports directly.
  *
- * They guard the `plugins.item` contract. The Plugins page draws the card head
- * and calls an entry for `summary` or `page`; a component that renders its own
- * card frame shows the entry twice, and an injected prop named `form` is
- * silently overwritten by the page's own `form` owner prop (owner props spread
- * last). Both mistakes are invisible to a typecheck, so they are asserted here.
+ * They guard the Plugins-page contract. This package is a bundle, so its page
+ * rides `plugins.bundle.config` keyed by the bundle's package name and renders
+ * on the bundle's own page — registering `plugins.item` instead would list it in
+ * the Official group and leave the bundle page with no form. The component must
+ * not draw a card frame either, because the page owns the title and description.
+ * None of this is visible to a typecheck, so it is asserted against the artifact.
  */
 
 const require_ = createRequire(import.meta.url)
@@ -90,15 +91,15 @@ test('the bundle requires its declared peers and nothing undeclared', () => {
   assert.ok(required.some(name => name === 'react'), 'react stays external')
 })
 
-test('apply registers the page and injects its form under a non-colliding name', () => {
+test('apply registers this bundle\'s page under the bundle-config contract', () => {
   const { factory } = loadClientBundle()
   const exports = factory(requireShim)
 
+  const slots = []
   const registered = []
   const injected = []
-  const effects = []
   const ctx = {
-    effect: (fn, label) => { effects.push(label); return fn() },
+    effect: (fn) => fn(),
     locale: {
       bind: () => (key) => key,
       register: () => () => {},
@@ -109,7 +110,7 @@ test('apply registers the page and injects its form under a non-colliding name',
       whileServed: (_namespaces, register) => register(new Set(['subagent-default-model'])),
     },
     slots: {
-      inject: (_key, callback) => { callback(); return () => {} },
+      inject: (key, callback) => { slots.push(key); callback(); return () => {} },
       register: (options, component) => {
         registered.push({ options, component })
         injected.push(options.inject())
@@ -123,10 +124,16 @@ test('apply registers the page and injects its form under a non-colliding name',
 
   exports.apply(ctx)
 
+  // A bundle's configuration rides plugins.bundle.config; plugins.item is the
+  // official settings pages' slot and lists the entry in the Official group.
+  assert.deepEqual(slots, ['plugins.bundle.config'])
   assert.equal(registered.length, 1, 'exactly one page is registered')
   const [{ options }] = registered
-  assert.equal(options.name, 'plugins.item', 'the page rides the Plugins page contract')
-  assert.equal(options.id, 'subagent-default-model')
+  assert.equal(options.name, 'plugins.bundle.config')
+  // Keyed by the package name, which is how the page addresses the bundle.
+  assert.equal(options.key, 'dsh-subagent-default-model')
+  assert.equal(options.id, undefined, 'a keyed bundle config carries no list id')
+  assert.equal(options.order, undefined, 'a keyed bundle config carries no list order')
   assert.ok(options.locale, 'the registration declares its dictionary namespace')
 
   const face = injected[0]
@@ -139,7 +146,7 @@ test('apply registers the page and injects its form under a non-colliding name',
   assert.equal(typeof face.loadCatalog, 'function')
 })
 
-test('the component renders the asked-for view instead of its own card frame', () => {
+test('the page renders its controls without drawing its own card frame', () => {
   const { factory } = loadClientBundle()
   const exports = factory(requireShim)
   const captured = []
@@ -157,26 +164,34 @@ test('the component renders the asked-for view instead of its own card frame', (
     remote: { session: { modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }) } },
   }
   exports.apply(ctx)
-  const Card = captured[0]
+  const Page = captured[0]
 
-  const face = {
+  const page = Page({
+    t: key => key,
+    view: 'page',
     configForm: { subscribe: () => () => {}, getSnapshot: () => ({ status: 'ready', writable: true }) },
     loadCatalog: async () => ({ groups: [], failures: [] }),
-  }
+  })
+  assert.equal(page.type, 'div')
+  assert.equal(page.props.className, 'dsh_sdm_page')
 
-  // `summary` is the one-liner the card head renders under its own title.
-  const summary = Card({ t: key => key, view: 'summary', ...face })
-  assert.equal(summary.type, 'Fragment', 'summary returns the description alone, not a card element')
-  assert.equal(summary.props.children, 'desc')
-
-  // `page` is the controls; the page owns the frame around them.
-  const page = Card({ t: key => key, view: 'page', ...face })
-  assert.notEqual(page.type, 'li', 'page must not render a card list item the page already owns')
-  assert.equal(page.type.name, 'SubagentModelPage', 'page renders the controls component')
-  // The page-level view must not carry its own headline or disclosure: the
-  // Host draws the title, the description, and the open/closed affordance.
+  // The bundle page draws the title, description, and uninstall chrome itself;
+  // a nested frame here would repeat them.
   const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
   for (const chrome of ['dsh_sdm_card', 'dsh_sdm_header', 'dsh_sdm_name', 'dsh_sdm_pending']) {
     assert.ok(!source.includes(chrome), `the bundle must not style a nested card frame (${chrome})`)
+  }
+})
+
+test('the bundle ships localized display metadata for its page title', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  // The Host reads <pkg>/locale/<lang>.json meta.title|description for the
+  // bundle page, and resolves it through the package's own exports map.
+  assert.ok(Object.hasOwn(manifest.exports, './locale/*.json'), 'the locale files must be exported')
+  for (const language of ['en', 'zh']) {
+    const file = new URL(`../locale/${language}.json`, import.meta.url)
+    const parsed = JSON.parse(readFileSync(file, 'utf8'))
+    assert.equal(typeof parsed.meta?.title, 'string', `${language} declares meta.title`)
+    assert.equal(typeof parsed.meta?.description, 'string', `${language} declares meta.description`)
   }
 })

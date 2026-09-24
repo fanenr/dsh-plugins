@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Subagent default model",
+    "description": "Choose the model route every subagent delegation uses: an explicit route wins over dsh's native chain (model selection, tool config, parent inheritance, agent-default-model); 'built-in' defers to it entirely."
+  }
+}

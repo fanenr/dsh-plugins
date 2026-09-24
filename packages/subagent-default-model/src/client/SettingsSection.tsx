@@ -2,8 +2,8 @@ import {
   useCallback, useEffect, useMemo, useSyncExternalStore, useState, type ReactElement,
 } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-// Type-only: pulls the Plugins page's SlotMap merge (the 'plugins.item' entry),
-// whose owner share carries `view` and the Host-supplied `form`.
+// Type-only: pulls the Plugins page's SlotMap merge for the
+// 'plugins.bundle.config' entry this page registers into.
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
@@ -16,10 +16,10 @@ import type { SubagentDefaultModelSettings } from './index.ts'
 /**
  * Injected business face: the shared configuration form plus the catalog loader.
  *
- * The form is injected as `configForm`, never `form`: the Plugins page's owner
- * share already carries a `form` of its own (the host-supplied
+ * The form is injected as `configForm`, never `form`: the owner share of a
+ * configuration slot carries a `form` of its own (the Host-supplied
  * {@link ConfigPageForm}), and owner props are spread last, so an injected
- * `form` would be silently replaced by it on the page view.
+ * `form` would be silently replaced by it.
  */
 export interface SubagentModelInjected {
   configForm: ConfigForm<SubagentDefaultModelSettings>
@@ -27,11 +27,14 @@ export interface SubagentModelInjected {
 }
 
 /**
- * Card props: the Plugins page's owner share (`view`, plus the form it renders
- * in `page`) + the injected business face + the locale seat.
+ * Page props: the slot's owner share (this page renders its `page` view) + the
+ * injected business face + the locale seat.
+ *
+ * The bundle page draws the title and description itself, so this page renders
+ * only the controls and their save footer.
  */
 export type SubagentModelCardProps =
-  PropsRuntime<'plugins.item'>
+  PropsRuntime<'plugins.bundle.config'>
   & InjectFace<SubagentModelInjected>
   & PropsLocale<typeof NS>
 
@@ -63,25 +66,13 @@ function modelRowLabel(groups: readonly ModelProviderGroup[], provider: string, 
   return `${group?.name ?? provider} · ${entry?.name ?? model}`
 }
 
-export function SubagentModelCard(props: SubagentModelCardProps): ReactElement {
-  const { t, configForm, loadCatalog, view } = props
-  // The Plugins page draws the card head — title, description, and the
-  // disclosure — and asks this entry for one of two views. `summary` is the
-  // one-liner the card head shows; `page` is the form on the detail page.
-  if (view === 'summary') return <>{t('desc')}</>
-  return <SubagentModelPage t={t} form={configForm} loadCatalog={loadCatalog} />
-}
-
 /**
- * The `page` view: this entry's controls on the Plugins detail page.
- * @param props - the locale seat, the shared form, and the catalog loader.
+ * Render this bundle's configuration page: the model route and reasoning
+ * effort, staged and written by the shared save.
+ * @param props - the locale seat, the shared configuration form, and the catalog loader.
  * @returns the staged form.
  */
-function SubagentModelPage({ t, form, loadCatalog }: {
-  t: SubagentModelCardProps['t']
-  form: ConfigForm<SubagentDefaultModelSettings>
-  loadCatalog: () => Promise<ModelCatalog>
-}): ReactElement {
+export function SubagentModelCard({ t, configForm: form, loadCatalog }: SubagentModelCardProps): ReactElement {
   const [modelOpen, setModelOpen] = useState(false)
   const [effortOpen, setEffortOpen] = useState(false)
   const [saving, setSaving] = useState(false)

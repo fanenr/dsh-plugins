@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Subagent 默认模型",
+    "description": "选择每次 Subagent 委托使用的模型路由：显式路由优先于 dsh 的原生链路（模型选择、工具配置、父级继承、agent-default-model）；「内置」则完全交由原生链路决定。"
+  }
+}
