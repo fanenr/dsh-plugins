@@ -2,8 +2,8 @@
  * dsh-subagent-default-model: choose the model route every subagent
  * delegation uses.
  *
- * One host-half function plugin that (1) registers the
- * `subagent-default-model` settings namespace (a route + optional reasoning
+ * One host-half function plugin that (1) declares the live
+ * `subagent-default-model` plugin configuration (a route + optional reasoning
  * effort) and (2) wraps `ctx.subagents.start/startContinuable` so each
  * delegation request carries the configured route.
  *
@@ -20,22 +20,18 @@
  *   chain decides: session model selection > tool config > parent
  *   inheritance > agent-default-model. Effort defers with it.
  *
- * Empty strings mean "built-in" so the user document can store all three
- * keys without tri-state sentinels.
+ * Empty strings mean "built-in" so the stored configuration can carry all
+ * three keys without tri-state sentinels.
  *
  * @module dsh-subagent-default-model
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
-import type Schema from '@deepseek-ai/schemastery'
 import type { AgentOptions } from '@deepseek-ai/dsh-agent'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type { ContinuableStartSpec, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
-
-/** Settings namespace the configuration card edits. */
-export const SETTINGS_NS = 'subagent-default-model'
 
 /** Plugin identity, used as the cordis bundle entry name. */
 export const name = 'dsh-subagent-default-model'
@@ -43,7 +39,27 @@ export const name = 'dsh-subagent-default-model'
 /** Services this plugin requires. */
 export const inject = ['settings', 'subagents']
 
-/** The stored section: empty string means "built-in" (defer to dsh). */
+/**
+ * Live configuration read by the delegation wrappers: empty string means
+ * "built-in" (defer to dsh).
+ */
+export interface Config {
+  /** Provider route; empty defers the whole route to the native chain. */
+  provider: Volatile<string>
+  /** Model id under {@link Config.provider}; kept in lockstep with it. */
+  model: Volatile<string>
+  /** Adapter-owned reasoning effort; empty defers to the route's default. */
+  reasoningEffort: Volatile<string>
+}
+
+/** Live configuration schema; `volatile()` is what makes the fields form-editable. */
+export const Config = z.object({
+  provider: z.string().default('').volatile(),
+  model: z.string().default('').volatile(),
+  reasoningEffort: z.string().default('').volatile(),
+})
+
+/** One resolved route/effort reading taken at delegation time. */
 export interface Settings {
   /** Provider route; empty defers the whole route to the native chain. */
   provider: string
@@ -53,26 +69,14 @@ export interface Settings {
   reasoningEffort: string
 }
 
-/** Schema: all-optional strings defaulting to the empty built-in marker. */
-export const Settings: Schema<Settings> = z.object({
-  provider: z.string().default(''),
-  model: z.string().default(''),
-  reasoningEffort: z.string().default(''),
-})
-
-/** Composition base for the namespace (route only; effort is user-owned). */
-export interface Config {
-  /** Provider route; empty defers to the native chain. */
-  provider?: string
-  /** Model id under {@link Config.provider}. */
-  model?: string
+/** Read a consistent snapshot of the live configuration. */
+function readSettings(config: Config): Settings {
+  return {
+    provider: config.provider.get(),
+    model: config.model.get(),
+    reasoningEffort: config.reasoningEffort.get(),
+  }
 }
-
-/** Standard-schema validation for the plugin config. */
-export const Config: Schema<Config> = z.object({
-  provider: z.string().default(''),
-  model: z.string().default(''),
-})
 
 /** Whether a stored route is explicit (non-empty provider AND model). */
 export function hasExplicitRoute(settings: Pick<Settings, 'provider' | 'model'>): boolean {
@@ -108,24 +112,27 @@ export function applySpec(spec: ContinuableStartSpec, settings: Settings): Conti
   return { ...spec, request: applyDefault(spec.request, settings) }
 }
 
-export function apply(ctx: Context, config?: Config): void {
-  ctx.effect(() => {
-    // The composition base carries the deployment-configured route; the user
-    // layer and the built-in empty marker layer above it.
-    const scope: SettingsScope<Settings> = ctx.settings.register(SETTINGS_NS, Settings, {
-      base: { provider: config?.provider ?? '', model: config?.model ?? '' },
-      applies: 'live',
-    })
+/**
+ * Wrap the subagent seam so every delegation carries the configured route, and
+ * opt this entry out of the auto-generated configuration page.
+ * @param ctx - Host context providing the subagents service and settings.
+ * @param config - resolved live configuration.
+ */
+export function apply(ctx: Context, config: Config): void {
+  ctx.inject(['settings'], (settingsCtx) => {
+    settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, ctx.fiber))
+  })
 
+  ctx.effect(() => {
     const subagents = ctx.subagents
     const originalStart = subagents.start
     const originalStartContinuable = subagents.startContinuable
 
     subagents.start = async (startName: string, request: SubagentStartRequest) => {
-      return originalStart.call(subagents, startName, applyDefault(request, scope.get()))
+      return originalStart.call(subagents, startName, applyDefault(request, readSettings(config)))
     }
     subagents.startContinuable = async (spec: ContinuableStartSpec) => {
-      return originalStartContinuable.call(subagents, applySpec(spec, scope.get()))
+      return originalStartContinuable.call(subagents, applySpec(spec, readSettings(config)))
     }
 
     return () => {

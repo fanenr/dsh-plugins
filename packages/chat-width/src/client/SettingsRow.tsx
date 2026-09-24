@@ -5,28 +5,28 @@
 
 import { useCallback, useState, useSyncExternalStore, type ReactElement } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
-import { NS, PERCENT_FIELD, PERCENT_MAX, PERCENT_MIN, isPercent, type ChatWidthSettings } from '../shared.ts'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
+import { PERCENT_FIELD, PERCENT_MAX, PERCENT_MIN, isPercent, type ChatWidthSettings } from '../shared.ts'
 
-/** Injected business face: the bound durable width scope. */
+/** Injected business face: the shared configuration form for this entry. */
 export interface ChatWidthRowInjected {
-  /** The `chat-width` namespace scope the row reads and writes. */
-  scope: SettingsScope<ChatWidthSettings>
+  /** The `chat-width` profile entry's form the row reads and writes. */
+  form: ConfigForm<ChatWidthSettings>
 }
 
 /** Full component props: runtime share + locale seat + injected face. */
 export type ChatWidthRowProps =
-  PropsRuntime<'settings.general.item'> & PropsLocale<typeof NS> & ChatWidthRowInjected
+  PropsRuntime<'settings.general.item'> & PropsLocale<'chat-width'> & ChatWidthRowInjected
 
 /**
  * Render the width row.
  * @param props - composed slot props.
  * @returns the preference row.
  */
-export function ChatWidthRow({ t, scope }: ChatWidthRowProps): ReactElement {
+export function ChatWidthRow({ t, form }: ChatWidthRowProps): ReactElement {
   const snapshot = useSyncExternalStore(
-    useCallback(listener => scope.subscribe(listener), [scope]),
-    useCallback(() => scope.getSnapshot(), [scope]),
+    useCallback(listener => form.subscribe(listener), [form]),
+    useCallback(() => form.getSnapshot(), [form]),
   )
   const stored = snapshot.value?.[PERCENT_FIELD]
   // Draft is undefined while the field mirrors storage; an edit holds it until
@@ -41,9 +41,9 @@ export function ChatWidthRow({ t, scope }: ChatWidthRowProps): ReactElement {
   const commit = (): void => {
     setDraft(undefined)
     if (trimmed === '') {
-      if (stored !== undefined) void scope.unset(PERCENT_FIELD)
+      if (stored !== undefined) void form.unset(PERCENT_FIELD)
     } else if (isPercent(parsed) && parsed !== stored) {
-      void scope.set(PERCENT_FIELD, parsed)
+      void form.set(PERCENT_FIELD, parsed)
     }
   }
 

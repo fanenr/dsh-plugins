@@ -23,16 +23,16 @@ transcript width from **Settings → General → Conversation width** instead.
   you dragged before installing this plugin cannot outrank the setting. The key
   itself is left untouched — uninstalling restores the old behavior.
 
-The preference lives in the `chat-width` namespace of the user-settings
-document, not in `localStorage`, so it travels with the rest of your settings.
+The preference lives in the `chat-width` profile entry's live configuration,
+not in `localStorage`, so it travels with the rest of your settings.
 
 ## Layout
 
 | Path | Role |
 |---|---|
-| `src/shared.ts` | Settings contract plus the width rules the browser half injects |
-| `src/index.ts` | Host half: registers the `chat-width` settings namespace |
-| `src/client/index.ts` | Browser half: stylesheet, scope subscription, Settings row |
+| `src/shared.ts` | Width rules the browser half injects, plus the value helpers |
+| `src/index.ts` | Host half: declares the live `chat-width` configuration |
+| `src/client/index.ts` | Browser half: stylesheet, form subscription, Settings row |
 | `src/client/styles.ts` | Owned style tag (row chrome + width rules) |
 | `src/client/SettingsRow.tsx` | The General settings row |
 | `src/client/locales.ts` | zh/en dictionaries |

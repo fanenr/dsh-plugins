@@ -12,7 +12,7 @@
 
 import type * as ReactNS from 'react'
 import {
-  Button, IconArchiveOutline20, IconBrowseOutline16, IconCloseOutline16, IconFolderOpenOutline16, IconTrashOutline16, Modal,
+  Button, IconArchiveOutlineRegular, IconBrowseOutlineRegular, IconCloseOutlineRegular, IconFolderOpenOutlineRegular, IconTrashOutlineRegular, Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { React } from './react'
 import type { SessionManagerRow } from '../shared/types'
@@ -197,18 +197,18 @@ export function makeSessionManagerView(t: TFace): () => ReactNS.ReactElement {
                           </td>
                           <td className="sm-col-activity">{relativeTime(row.lastActivity, now)}</td>
                           <td className="sm-actions sm-col-actions">
-                            <Button variant="ghost" size="sm" icon={<IconBrowseOutline16 />} aria-label={t('preview')} title={t('preview')} onClick={() => { void openPreview(row) }} />
+                            <Button variant="ghost" size="sm" icon={<IconBrowseOutlineRegular />} aria-label={t('preview')} title={t('preview')} onClick={() => { void openPreview(row) }} />
                             {list.archiveAvailable && (
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                icon={row.archived ? <IconFolderOpenOutline16 /> : <IconArchiveOutline20 size={16} />}
+                                icon={row.archived ? <IconFolderOpenOutlineRegular /> : <IconArchiveOutlineRegular size={16} />}
                                 aria-label={row.archived ? t('unarchive') : t('archive')}
                                 title={row.archived ? t('unarchive') : t('archive')}
                                 onClick={() => { void toggleArchive(row) }}
                               />
                             )}
-                            <Button variant="ghost" size="sm" className="sm-delete-btn" icon={<IconTrashOutline16 />} aria-label={t('confirmDelete')} title={t('confirmDelete')} onClick={() => { setConfirmIds([row.sessionId]) }} />
+                            <Button variant="ghost" size="sm" className="sm-delete-btn" icon={<IconTrashOutlineRegular />} aria-label={t('confirmDelete')} title={t('confirmDelete')} onClick={() => { setConfirmIds([row.sessionId]) }} />
                           </td>
                         </tr>
                       ))}
@@ -302,7 +302,7 @@ function PreviewPane(props: PreviewPaneProps): ReactNS.ReactElement {
           <span className="sm-preview-id">{props.sessionId}</span>
         </div>
         <button type="button" className="sm-preview-close" aria-label={props.t('close')} onClick={props.onClose}>
-          <IconCloseOutline16 size={14} />
+          <IconCloseOutlineRegular size={14} />
         </button>
       </div>
       {props.loading === true && <p className="sm-note">{props.t('retry')}…</p>}

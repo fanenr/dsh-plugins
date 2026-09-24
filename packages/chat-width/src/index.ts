@@ -1,19 +1,21 @@
 /**
  * dsh-chat-width — Host half.
  *
- * Registers the `chat-width` settings namespace (the transcript content width
- * as a percentage of the conversation column). Every visual effect lives in
- * the browser half; this half only gives the preference a durable home in the
- * user-settings document.
+ * Declares the live `chat-width` plugin configuration (the transcript content
+ * width as a percentage of the conversation column) and turns off the
+ * auto-generated configuration page, because this plugin ships its own row in
+ * Settings → General. The live field is what gives the preference a durable
+ * home in the active profile's patch document.
+ *
+ * Every visual effect lives in the browser half.
  *
  * @module dsh-chat-width
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
-import type Schema from '@deepseek-ai/schemastery'
-import { NS, PERCENT_FIELD, PERCENT_MAX, PERCENT_MIN, type ChatWidthSettings } from './shared.ts'
+import { NS, PERCENT_FIELD, PERCENT_MAX, PERCENT_MIN } from './shared.ts'
 
 export { NS, PERCENT_FIELD, PERCENT_MAX, PERCENT_MIN, type ChatWidthSettings } from './shared.ts'
 
@@ -21,21 +23,27 @@ export { NS, PERCENT_FIELD, PERCENT_MAX, PERCENT_MIN, type ChatWidthSettings } f
 export const name = 'dsh-chat-width'
 
 /**
- * Durable schema. The field carries no default — an absent value means
+ * Live configuration. The field carries no default — an absent value means
  * "adaptive", so clearing the input restores dsh's own clamp instead of
  * pinning a percentage.
  */
-export const ChatWidthSettingsSchema: Schema<ChatWidthSettings> = z.object({
-  [PERCENT_FIELD]: z.number().step(1).min(PERCENT_MIN).max(PERCENT_MAX),
+export interface Config {
+  /** Transcript content width as a percentage of the conversation column. */
+  percent?: Volatile<number | undefined>
+}
+
+/** Live configuration schema; `volatile()` is what makes the field form-editable. */
+export const Config = z.object({
+  [PERCENT_FIELD]: z.number().step(1).min(PERCENT_MIN).max(PERCENT_MAX).volatile(),
 })
 
 /**
- * Register the durable section when the optional settings service is
- * composed; a profile without it simply serves no namespace.
+ * Opt out of the auto-generated configuration page; this plugin renders its
+ * own Settings row through the browser half.
  * @param ctx - Host context that may acquire the settings service.
  */
 export function apply(ctx: Context): void {
   ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.settings.register(NS, ChatWidthSettingsSchema)
+    settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, ctx.fiber))
   })
 }

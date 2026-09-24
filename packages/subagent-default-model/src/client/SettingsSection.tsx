@@ -3,22 +3,22 @@ import {
 } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ModelCatalog, ModelProviderGroup } from '@deepseek-ai/dsh-api-session-controller/types'
-import { IconChevronDownOutline14, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconChevronDownOutlineRegular, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import { NS } from './locales.ts'
 import type { SubagentDefaultModelSettings } from './index.ts'
 
-/** Injected business face: the bound settings scope plus the catalog loader. */
+/** Injected business face: the shared configuration form plus the catalog loader. */
 export interface SubagentModelInjected {
-  scope: SettingsScope<SubagentDefaultModelSettings>
+  form: ConfigForm<SubagentDefaultModelSettings>
   loadCatalog: () => Promise<ModelCatalog>
 }
 
 /** Card props: owner share is empty for plugin cards. */
 export type SubagentModelCardProps =
-  PropsRuntime<'settings.plugin.item'>
+  PropsRuntime<'plugins.item'>
   & InjectFace<SubagentModelInjected>
   & PropsLocale<typeof NS>
 
@@ -50,7 +50,7 @@ function modelRowLabel(groups: readonly ModelProviderGroup[], provider: string, 
   return `${group?.name ?? provider} · ${entry?.name ?? model}`
 }
 
-export function SubagentModelCard({ t, scope, loadCatalog }: SubagentModelCardProps): ReactElement {
+export function SubagentModelCard({ t, form, loadCatalog }: SubagentModelCardProps): ReactElement {
   const [open, setOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
   const [effortOpen, setEffortOpen] = useState(false)
@@ -60,8 +60,8 @@ export function SubagentModelCard({ t, scope, loadCatalog }: SubagentModelCardPr
   const saveStarted = useRef(false)
 
   const snapshot = useSyncExternalStore(
-    useCallback((listener) => scope.subscribe(listener), [scope]),
-    useCallback(() => scope.getSnapshot(), [scope]),
+    useCallback((listener) => form.subscribe(listener), [form]),
+    useCallback(() => form.getSnapshot(), [form]),
   )
   const stored = snapshot.value
   // Draft until the Host confirms the write: a rejected write leaves the
@@ -212,7 +212,7 @@ export function SubagentModelCard({ t, scope, loadCatalog }: SubagentModelCardPr
     setField('provider', next.provider ?? '')
     setField('model', next.model ?? '')
     setField('reasoningEffort', next.reasoningEffort ?? '')
-    void scope.mutate(ops).then(() => {
+    void form.mutate(ops).then(() => {
       setDraft(undefined)
       setFailed(false)
     }).catch(() => {
@@ -242,7 +242,7 @@ export function SubagentModelCard({ t, scope, loadCatalog }: SubagentModelCardPr
           <span className="dsh_sdm_description">{t('desc')}</span>
         </span>
         {pending ? <span className="dsh_sdm_pending">{t('unsaved')}</span> : null}
-        <IconChevronDownOutline14 className={`dsh_sdm_chevron${open ? ' dsh_sdm_chevronOpen' : ''}`} />
+        <IconChevronDownOutlineRegular className={`dsh_sdm_chevron${open ? ' dsh_sdm_chevronOpen' : ''}`} />
       </button>
 
       {open && (
@@ -276,7 +276,7 @@ export function SubagentModelCard({ t, scope, loadCatalog }: SubagentModelCardPr
                       onClick={() => setModelOpen(value => !value)}
                     >
                       <span className="dsh_sdm_selectorText">{currentRouteLabel}</span>
-                      <IconChevronDownOutline14 className="dsh_sdm_chevron" />
+                      <IconChevronDownOutlineRegular className="dsh_sdm_chevron" />
                     </button>
                   )}
                 />
@@ -312,7 +312,7 @@ export function SubagentModelCard({ t, scope, loadCatalog }: SubagentModelCardPr
                             ? t('effortEmpty')
                             : efforts.find(item => item.id === effort)?.name ?? effort}
                         </span>
-                        <IconChevronDownOutline14 className="dsh_sdm_chevron" />
+                        <IconChevronDownOutlineRegular className="dsh_sdm_chevron" />
                       </button>
                     )}
                   />

@@ -19,9 +19,9 @@ effort lets the route's own default take over.
 dsh plugin --profile <name> add dsh-subagent-default-model
 ```
 
-The card appears under **Settings → Plugins → Configurable plugins**, keyed by
-the `subagent-default-model` namespace. Edits apply live on the next subagent
-start; no restart is needed.
+The page appears on the **Plugins** page, keyed by the
+`subagent-default-model` profile entry, and only while the Host serves it.
+Edits apply live on the next subagent start; no restart is needed.
 
 ## Develop
 

@@ -11,13 +11,15 @@
  *   with no ResizeObserver of our own.
  *
  * The same half registers the Settings row that writes the preference; the
- * scope subscription rewrites the tag's text in place.
+ * form subscription rewrites the tag's text in place.
  *
  * @module dsh-chat-width/client
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+// Type-only: pulls the config-forms Context merge (ctx.configForms) and the
+// ConfigForm face.
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
@@ -35,17 +37,17 @@ export type { ChatWidthSettings } from '../shared.ts'
 const PLUGIN_ID = 'dsh-chat-width'
 
 /** Services this client half requires. */
-export const inject = ['slots', 'locale', 'settingsScope']
+export const inject = ['slots', 'locale', 'configForms']
 
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-chat-width: dictionaries')
 
-  const scope: SettingsScope<ChatWidthSettings> = ctx.settingsScope.bind<ChatWidthSettings>({ namespace: NS })
+  const form: ConfigForm<ChatWidthSettings> = ctx.configForms.get<ChatWidthSettings>(NS)
   ctx.effect(() => {
     const tag = adoptStyles(PLUGIN_ID)
     if (tag === undefined) return () => {}
-    const publish = (): void => { tag.textContent = styleText(scope.getSnapshot().value?.[PERCENT_FIELD]) }
-    const unsubscribe = scope.subscribe(publish)
+    const publish = (): void => { tag.textContent = styleText(form.getSnapshot().value?.[PERCENT_FIELD]) }
+    const unsubscribe = form.subscribe(publish)
     publish()
     return () => { unsubscribe(); tag.remove() }
   }, 'dsh-chat-width: stylesheet and width rule')
@@ -55,6 +57,6 @@ export function apply(ctx: ClientContext): void {
     id: 'chat-width',
     order: 13,
     locale: NS,
-    inject: (): ChatWidthRowInjected => ({ scope }),
+    inject: (): ChatWidthRowInjected => ({ form }),
   }, ChatWidthRow))
 }

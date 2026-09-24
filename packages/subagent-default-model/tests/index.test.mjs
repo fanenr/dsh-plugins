@@ -4,12 +4,19 @@ import test from 'node:test'
 // Tests run against the built artifact so they exercise the shipped module.
 const {
   Config,
-  SETTINGS_NS,
-  Settings,
   applyDefault,
   applySpec,
   hasExplicitRoute,
 } = await import('../lib/index.js')
+
+/** Project a live Config into the plain snapshot the wrappers read. */
+function read(config) {
+  return {
+    provider: config.provider.get(),
+    model: config.model.get(),
+    reasoningEffort: config.reasoningEffort.get(),
+  }
+}
 
 test('built-in route leaves the request untouched', () => {
   const request = { agentOptions: { provider: 'p', model: 'm' } }
@@ -81,11 +88,6 @@ test('hasExplicitRoute requires both provider and model', () => {
   assert.ok(!hasExplicitRoute({ provider: '', model: '' }))
 })
 
-test('schema defaults every field to the empty built-in marker', () => {
-  const value = Settings['~standard'].validate({}).value
-  assert.deepStrictEqual(value, { provider: '', model: '', reasoningEffort: '' })
-})
-
 test('applySpec folds the route onto a continuable spec request', () => {
   const spec = { provider: 'spawn', label: 'x', request: { agentOptions: { provider: 'p' } } }
   const result = applySpec(spec, { provider: 'p2', model: 'm2', reasoningEffort: '' })
@@ -94,11 +96,23 @@ test('applySpec folds the route onto a continuable spec request', () => {
   assert.strictEqual(result.label, 'x')
 })
 
-test('config schema defaults to an empty route', () => {
-  const value = Config['~standard'].validate({}).value
-  assert.deepStrictEqual(value, { provider: '', model: '' })
+test('the live schema resolves an empty route to the built-in marker', () => {
+  assert.deepStrictEqual(read(Config({})), { provider: '', model: '', reasoningEffort: '' })
 })
 
-test('settings namespace is stable', () => {
-  assert.strictEqual(SETTINGS_NS, 'subagent-default-model')
+test('the schema defaults to an empty route and admits a configured one', () => {
+  assert.deepStrictEqual(read(Config({})), { provider: '', model: '', reasoningEffort: '' })
+  assert.deepStrictEqual(read(Config({ provider: 'p', model: 'm', reasoningEffort: 'high' })), {
+    provider: 'p',
+    model: 'm',
+    reasoningEffort: 'high',
+  })
+})
+
+test('every field is volatile, so the configuration form can edit it live', () => {
+  for (const field of ['provider', 'model', 'reasoningEffort']) {
+    assert.equal(Config.dict[field].meta.volatile, true, `${field} must be volatile`)
+  }
+  // The root stays plain, so the schema projects a form instead of being one.
+  assert.equal(Config.meta.volatile, undefined)
 })

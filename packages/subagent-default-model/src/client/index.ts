@@ -1,9 +1,9 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-// Type-only: pulls the keyed slot declaration (`settings.plugin.item`).
-import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
-// Type-only: pulls the settings scope service merge (`ctx.settingsScope`).
+// Type-only: pulls the Plugins page's SlotMap merge (the 'plugins.item' entry).
+import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
+// Type-only: pulls the ctx.configForms Context merge and the ConfigForm face.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
@@ -18,7 +18,7 @@ import { adoptStyles } from './styles.ts'
 export { SubagentModelCard } from './SettingsSection.tsx'
 export type { SubagentModelInjected, SubagentModelCardProps } from './SettingsSection.tsx'
 
-/** The `subagent-default-model` namespace section as the settings card edits it. */
+/** The `subagent-default-model` entry's live configuration as the card edits it. */
 export interface SubagentDefaultModelSettings {
   /** Provider route; empty means built-in (defer to dsh). */
   provider?: string
@@ -28,7 +28,7 @@ export interface SubagentDefaultModelSettings {
   reasoningEffort?: string
 }
 
-export const inject = ['slots', 'locale', 'settingsScope', 'remote', 'remote.session']
+export const inject = ['slots', 'locale', 'configForms', 'remote', 'remote.session']
 
 /** Client bundle id, stamped onto owned style tags for HMR bookkeeping. */
 const PLUGIN_ID = 'dsh-subagent-default-model'
@@ -45,14 +45,18 @@ async function loadCatalog(ctx: ClientContext): Promise<ModelCatalog> {
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => adoptStyles(PLUGIN_ID), 'dsh-subagent-default-model: stylesheet')
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-subagent-default-model: dictionaries')
-  const scope = ctx.settingsScope.bind<SubagentDefaultModelSettings>({ namespace: NS })
-  ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-    name: 'settings.plugin.item',
-    key: NS,
+  const form: ConfigForm<SubagentDefaultModelSettings> = ctx.configForms.get<SubagentDefaultModelSettings>(NS)
+  // The page exists exactly while the Host serves this entry: a deployment
+  // that never composed the Host half shows no trace of it.
+  ctx.effect(() => ctx.configForms.whileServed([NS], () => ctx.slots.inject('plugins.item', () => ctx.slots.register({
+    name: 'plugins.item',
+    id: NS,
+    order: 30,
+    label: () => ctx.locale.bind(NS)('title'),
     locale: NS,
     inject: (): SubagentModelInjected => ({
-      scope,
+      form,
       loadCatalog: () => loadCatalog(ctx),
     }),
-  }, SubagentModelCard))
+  }, SubagentModelCard))), 'dsh-subagent-default-model: page')
 }
