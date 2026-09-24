@@ -9,7 +9,7 @@ export const NS = 'dsh-session-manager'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
-    'dsh-session-manager': SessionManagerKey
+    [NS]: SessionManagerKey
   }
 }
 
@@ -29,6 +29,7 @@ export const zh = {
   close: '关闭',
   archive: '归档',
   unarchive: '取消归档',
+  archiveFailed: '归档失败',
   previewEmpty: '没有可预览的消息',
   previewEmptyMeta: '空会话（仅元数据，无对话内容）',
   previewFailed: '预览加载失败',
@@ -58,6 +59,7 @@ export const en: typeof zh = {
   close: 'Close',
   archive: 'Archive',
   unarchive: 'Unarchive',
+  archiveFailed: 'Archive failed',
   previewEmpty: 'Nothing to preview',
   previewEmptyMeta: 'Empty session (metadata only, no conversation)',
   previewFailed: 'Preview failed',

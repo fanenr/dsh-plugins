@@ -36,8 +36,10 @@ import type { ContinuableStartSpec, SubagentStartRequest } from '@deepseek-ai/ds
 /** Plugin identity, used as the cordis bundle entry name. */
 export const name = 'dsh-subagent-default-model'
 
-/** Services this plugin requires. */
-export const inject = ['settings', 'subagents']
+/** Services this plugin requires. The presentation opt-out reaches Settings
+ *  through an optional `ctx.inject(['settings'], ...)` child, so a profile
+ *  without Settings still runs the delegation wrappers. */
+export const inject = ['subagents']
 
 /**
  * Live configuration read by the delegation wrappers: empty string means

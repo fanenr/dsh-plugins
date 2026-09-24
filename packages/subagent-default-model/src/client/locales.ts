@@ -40,6 +40,6 @@ export const en: typeof zh = {
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     /** The subagent-default-model settings copy. */
-    'subagent-default-model': SubagentDefaultModelKey
+    [NS]: SubagentDefaultModelKey
   }
 }

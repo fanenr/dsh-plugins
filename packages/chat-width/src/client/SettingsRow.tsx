@@ -6,7 +6,7 @@
 import { useCallback, useState, useSyncExternalStore, type ReactElement } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
-import { PERCENT_FIELD, PERCENT_MAX, PERCENT_MIN, isPercent, type ChatWidthSettings } from '../shared.ts'
+import { NS, PERCENT_FIELD, PERCENT_MAX, PERCENT_MIN, isPercent, type ChatWidthSettings } from '../shared.ts'
 
 /** Injected business face: the shared configuration form for this entry. */
 export interface ChatWidthRowInjected {
@@ -16,7 +16,7 @@ export interface ChatWidthRowInjected {
 
 /** Full component props: runtime share + locale seat + injected face. */
 export type ChatWidthRowProps =
-  PropsRuntime<'settings.general.item'> & PropsLocale<'chat-width'> & ChatWidthRowInjected
+  PropsRuntime<'settings.general.item'> & PropsLocale<typeof NS> & ChatWidthRowInjected
 
 /**
  * Render the width row.

@@ -1,11 +1,9 @@
 /**
  * The browser half's locale dictionaries. The client re-registers them on
  * locale change; every label resolves through the framework's `t` seat.
- *
- * The namespace key is spelled as a literal here (not through `NS`) because
- * `LocaleNamespaceMap` is a declaration-merged table the TypeScript compiler
- * must resolve statically; `shared.ts` owns the same value for runtime use.
  */
+
+import { NS } from '../shared.ts'
 
 /** Locale key union for the width row. */
 export type ChatWidthKey = keyof typeof zh
@@ -13,7 +11,7 @@ export type ChatWidthKey = keyof typeof zh
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     /** The conversation width row's copy. */
-    'chat-width': ChatWidthKey
+    [NS]: ChatWidthKey
   }
 }
 

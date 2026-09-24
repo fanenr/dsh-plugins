@@ -55,7 +55,7 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('settings.general.item', () => ctx.slots.register({
     name: 'settings.general.item',
     id: 'chat-width',
-    order: 13,
+    order: 16,
     locale: NS,
     inject: (): ChatWidthRowInjected => ({ form }),
   }, ChatWidthRow))
