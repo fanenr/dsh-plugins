@@ -95,6 +95,7 @@ function deleteHostOf(ctx: Context): DeleteHost {
     agents: { get: (id) => agents?.get(id) },
     sessionQuery: ctx.get('sessionQuery') as DeleteHost['sessionQuery'],
     storageDomain: ctx.get('storageDomain') as DeleteHost['storageDomain'],
+    workspaceRegistry: ctx.get('workspaceRegistry') as DeleteHost['workspaceRegistry'],
     logs: {
       findDir: id => findLogDir(logs, id),
       removeDir: dir => logs.rm(dir),

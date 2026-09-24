@@ -50,6 +50,25 @@ function makeTable(rows) {
   }
 }
 
+/** Build a fake workspace registry: `workspaces` is `{ id: sessionIds }`, `archived` the archive set. */
+function makeRegistry(workspaces = {}, archived = []) {
+  const archivedSet = new Set(archived)
+  const entities = Object.entries(workspaces).map(([id, sessionIds]) => ({
+    id,
+    sessionIds: [...sessionIds],
+    async detachSession(sessionId) {
+      this.sessionIds = this.sessionIds.filter(existing => String(existing) !== String(sessionId))
+    },
+  }))
+  return {
+    entities,
+    archivedSet,
+    get archivedSessionIds() { return [...archivedSet] },
+    list: () => entities,
+    async unarchiveSession(sessionId) { archivedSet.delete(sessionId) },
+  }
+}
+
 test('descendantsOf collects a root with no children', () => {
   const records = [record('a'), record('b')]
   assert.deepStrictEqual(descendantsOf(records, 'a'), ['a'])
@@ -88,25 +107,16 @@ test('deleteSession removes log, cache and workspace rows', async () => {
   const cache = makeTable({
     'session-11111111-1111-4111-8111-111111111111': { identity: {} },
   })
-  const workspaces = makeTable({
-    w1: { sessionIds: ['11111111-1111-4111-8111-111111111111', 'other'] },
-  })
-  const globalState = { archivedSessionIds: ['11111111-1111-4111-8111-111111111111'] }
+  const registry = makeRegistry(
+    { w1: ['11111111-1111-4111-8111-111111111111', 'other'] },
+    ['11111111-1111-4111-8111-111111111111'],
+  )
   const host = {
     logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
     sessions: { get: () => undefined },
     sessionQuery: { listSessions: async () => [record('11111111-1111-4111-8111-111111111111')] },
-    storageDomain: {
-      get: name => name === 'session_projcache'
-        ? { table: () => cache }
-        : {
-          table: () => workspaces,
-          global: {
-            get: () => globalState,
-            set: async value => { Object.assign(globalState, value) },
-          },
-        },
-    },
+    storageDomain: { get: name => name === 'session_projcache' ? { table: () => cache } : undefined },
+    workspaceRegistry: registry,
   }
   const outcomes = await deleteSession(host, '11111111-1111-4111-8111-111111111111')
   assert.deepStrictEqual(outcomes, [{
@@ -116,9 +126,25 @@ test('deleteSession removes log, cache and workspace rows', async () => {
     workspaceRemoved: true,
   }])
   assert.strictEqual(cache.map.size, 0)
-  assert.deepStrictEqual(workspaces.map.get('w1').sessionIds, ['other'])
-  assert.deepStrictEqual(globalState.archivedSessionIds, [])
+  assert.deepStrictEqual(registry.entities[0].sessionIds, ['other'])
+  assert.deepStrictEqual([...registry.archivedSet], [])
   assert.strictEqual(logs.removed.length, 1)
+})
+
+test('deleteSession drops a dangling archive entry for a session with no membership', async () => {
+  // An archived session keeps no workspace membership in some layouts; the
+  // archive entry must still go, and the delete must report the cleanup.
+  const logs = makeLogs(['/root/bucket-a/session-44444444-4444-4444-8444-444444444444'])
+  const registry = makeRegistry({}, ['44444444-4444-4444-8444-444444444444'])
+  const host = {
+    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
+    sessions: { get: () => undefined },
+    sessionQuery: { listSessions: async () => [record('44444444-4444-4444-8444-444444444444')] },
+    workspaceRegistry: registry,
+  }
+  const outcomes = await deleteSession(host, '44444444-4444-4444-8444-444444444444')
+  assert.strictEqual(outcomes[0].workspaceRemoved, true)
+  assert.deepStrictEqual([...registry.archivedSet], [])
 })
 
 test('deleteSession fails before accounting when the log directory is missing', async () => {
@@ -127,11 +153,7 @@ test('deleteSession fails before accounting when the log directory is missing', 
     logs: makeLogs([]),
     sessions: { get: () => undefined },
     sessionQuery: { listSessions: async () => [record('22222222-2222-4222-8222-222222222222')] },
-    storageDomain: {
-      get: name => name === 'session_projcache'
-        ? { table: () => cache }
-        : { table: () => makeTable({}), global: undefined },
-    },
+    storageDomain: { get: name => name === 'session_projcache' ? { table: () => cache } : undefined },
   }
   await assert.rejects(
     () => deleteSession(host, '22222222-2222-4222-8222-222222222222'),
@@ -148,7 +170,7 @@ test('deleteSession refuses a session that is live in the host, before any remov
     logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
     sessions: { get: id => id === '33333333-3333-4333-8333-333333333333' ? {} : undefined },
     sessionQuery: { listSessions: async () => [record('33333333-3333-4333-8333-333333333333')] },
-    storageDomain: { get: () => ({ table: () => cache }) },
+    storageDomain: { get: name => name === 'session_projcache' ? { table: () => cache } : undefined },
   }
   await assert.rejects(
     () => deleteSession(host, '33333333-3333-4333-8333-333333333333'),
@@ -567,90 +589,65 @@ test('list keeps a running session even when the projection reports blank', asyn
   assert.deepStrictEqual(ids, ['77777777-7777-4777-8777-777777777777'])
 })
 
-/** Build a ctx whose storageDomain serves a workspace global the write REPLACES.
- * The domain's `set` stores the whole value, so the fake must replace rather
- * than merge: an `Object.assign` would keep keys the write dropped and hide
- * exactly the field loss these tests exist to catch. */
-function archiveCtx(globalState, options = {}) {
-  const writes = []
-  const read = () => globalState.value
-  const ctx = {
-    get: name => name === 'storageDomain'
-      ? {
-        get: domain => domain === 'workspace'
-          ? {
-            global: {
-              get: read,
-              set: async value => {
-                writes.push(structuredClone(value))
-                globalState.value = value
-              },
-            },
-          }
-          : undefined,
-      }
-      : options.registry === undefined ? undefined : (name === 'workspaceRegistry' ? options.registry : undefined),
+/** Build a ctx serving a fake workspace registry over `archived`, recording calls. */
+function archiveCtx(archived = [], options = {}) {
+  const calls = []
+  const state = new Set(archived)
+  const registry = {
+    get archivedSessionIds() { return [...state] },
+    async archiveSession(sessionId, opts) {
+      calls.push({ op: 'archive', sessionId, options: opts })
+      if (options.refuseArchive === true) throw new Error('cannot archive: the session is active (turn)')
+      state.add(sessionId)
+    },
+    async unarchiveSession(sessionId) {
+      calls.push({ op: 'unarchive', sessionId })
+      state.delete(sessionId)
+    },
   }
-  return { ctx, writes }
+  const ctx = {
+    get: name => name === 'workspaceRegistry' ? registry : undefined,
+  }
+  return { ctx, calls, state }
 }
 
-test('archiving preserves workspace-global fields this plugin does not model', async () => {
-  // defaultWorkspaceId and pinnedSessionIds are real 0.1.7 fields. Rebuilding
-  // the global from a known-field template silently erases them, and the
-  // domain schema defaults a missing pinnedSessionIds to [] — so the loss is
-  // invisible without asserting it here.
-  const globalState = { value: {
-    initialized: true,
-    defaultWorkspaceId: 'ws-main',
-    workspaceIds: ['ws-main', 'ws-side'],
-    archivedSessionIds: ['old-1'],
-    pinnedSessionIds: ['pin-a', 'pin-b', 'pin-c'],
-    pendingMutation: { operation: 'create', workspaceId: 'ws-side' },
-  } }
-  const { ctx, writes } = archiveCtx(globalState)
+test('archiving goes through the registry archive API and reports the committed set', async () => {
+  const { ctx, calls, state } = archiveCtx(['old-1'])
 
   const result = await setArchived(ctx, 'new-x', true)
 
+  assert.deepStrictEqual(calls, [{ op: 'archive', sessionId: 'new-x', options: undefined }])
   assert.deepStrictEqual(result.archivedSessionIds, ['old-1', 'new-x'])
-  assert.strictEqual(globalState.value.defaultWorkspaceId, 'ws-main', 'the default workspace must survive')
-  assert.deepStrictEqual(globalState.value.pinnedSessionIds, ['pin-a', 'pin-b', 'pin-c'], 'unrelated pins must survive')
-  assert.deepStrictEqual(globalState.value.pendingMutation, { operation: 'create', workspaceId: 'ws-side' },
-    'the recoverable mutation marker must survive')
-  assert.strictEqual(writes.length, 1)
-  assert.strictEqual(writes[0].workspaceIds.length, 2, 'workspace accounting must survive')
+  assert.deepStrictEqual([...state], ['old-1', 'new-x'])
 })
 
-test('archiving drops only the archived session own pin', async () => {
-  // Pinning and archival are mutually exclusive: the official archiveSession
-  // filters the id out of pinnedSessionIds and unarchiveSession never restores it.
-  const globalState = { value: {
-    initialized: true,
-    workspaceIds: [],
-    archivedSessionIds: [],
-    pinnedSessionIds: ['pin-a', 'pin-b', 'pin-c'],
-  } }
-  const { ctx } = archiveCtx(globalState)
+test('unarchiving goes through the registry unarchive API', async () => {
+  const { ctx, calls } = archiveCtx(['old-1', 'old-2'])
 
-  await setArchived(ctx, 'pin-b', true)
-  assert.deepStrictEqual(globalState.value.pinnedSessionIds, ['pin-a', 'pin-c'])
+  const result = await setArchived(ctx, 'old-1', false)
 
-  await setArchived(ctx, 'pin-b', false)
-  assert.deepStrictEqual(globalState.value.pinnedSessionIds, ['pin-a', 'pin-c'],
-    'unarchiving must not invent a pin back')
-  assert.deepStrictEqual(globalState.value.archivedSessionIds, [])
+  assert.deepStrictEqual(calls, [{ op: 'unarchive', sessionId: 'old-1' }])
+  assert.deepStrictEqual(result.archivedSessionIds, ['old-2'])
 })
 
-test('archiving a pre-0.1.7 record does not invent a pin field', async () => {
-  const globalState = { value: { initialized: true, workspaceIds: [], archivedSessionIds: [] } }
-  const { ctx } = archiveCtx(globalState)
+test('archiving never asks the registry to stop running work', async () => {
+  // Stopping a turn is destructive and the harness only does it behind a
+  // confirmation naming the running activity (the sidebar's flow). This page
+  // has no such confirmation, so it must let the registry refuse instead of
+  // silently cancelling the user's work.
+  const { ctx, calls } = archiveCtx([])
 
-  await setArchived(ctx, 'new-x', true)
-  assert.strictEqual(Object.hasOwn(globalState.value, 'pinnedSessionIds'), false,
-    'an unrelated write must not materialize a field the record never carried')
-  assert.deepStrictEqual(globalState.value.archivedSessionIds, ['new-x'])
+  await setArchived(ctx, 'busy-1', true)
+
+  assert.strictEqual(calls[0].options, undefined)
 })
 
-test('archiving reports unavailable instead of writing when the domain is absent', async () => {
+test('archiving surfaces a registry refusal instead of swallowing it', async () => {
+  const { ctx } = archiveCtx([], { refuseArchive: true })
+  await assert.rejects(() => setArchived(ctx, 'new-x', true), /the session is active/)
+})
+
+test('archiving reports unavailable instead of writing when the registry is absent', async () => {
   const ctx = { get: () => undefined }
-  await assert.rejects(() => setArchived(ctx, 'new-x', true), /no workspace storage domain/)
+  await assert.rejects(() => setArchived(ctx, 'new-x', true), /no workspace registry/)
 })

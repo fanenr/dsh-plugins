@@ -16,13 +16,16 @@ The page appears under **Settings → Sessions** and rides the authenticated
   live on session add/remove/status/activity and workspace renames.
 - **Preview** — read the last few messages of any session (including
   subagent sessions) without opening it.
-- **Archive toggle** — the harness's own archive set, so the sidebar
-  refreshes live. The built-in sidebar can only archive (never unarchive);
-  this page toggles both directions.
+- **Archive toggle** — the harness's own archive set through
+  `workspaceRegistry`, so the sidebar refreshes live and the registry's pin
+  rules stay intact. A session with running work is refused (the page shows
+  the refusal) rather than archived with its turn cancelled: stopping work is
+  destructive and the harness only does it behind a confirmation naming the
+  activity, which this page does not offer.
 - **Permanent delete** — risk-confirmed, removes the session log directory,
-  projection-cache row, and workspace accounting. Recursively deletes child
-  subagent sessions. Irreversible. A session that is live in the host refuses
-  deletion (see Safety).
+  projection-cache row, and workspace accounting (registry membership and
+  archive entry). Recursively deletes child subagent sessions. Irreversible.
+  A session that is live in the host refuses deletion (see Safety).
 
 ## Install
 

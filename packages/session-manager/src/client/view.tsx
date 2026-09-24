@@ -67,6 +67,10 @@ export function makeSessionManagerView(t: TFace): () => ReactNS.ReactElement {
     const [confirmIds, setConfirmIds] = React.useState<readonly string[]>([])
     const [selected, setSelected] = React.useState<Set<string>>(new Set())
     const [now, setNow] = React.useState(Date.now())
+    // The registry refuses to archive a session with running work (stopping a
+    // turn is destructive and needs a confirmation this page does not offer),
+    // so the refusal is shown rather than swallowed.
+    const [archiveError, setArchiveError] = React.useState<string | undefined>(undefined)
 
     const allIds = list.phase === 'ready' ? list.rows.map(row => row.sessionId) : []
     const allSelected = allIds.length > 0 && allIds.every(id => selected.has(id))
@@ -110,6 +114,7 @@ export function makeSessionManagerView(t: TFace): () => ReactNS.ReactElement {
 
     const toggleArchive = React.useCallback(async (row: SessionManagerRow) => {
       const result = await setArchived(row.sessionId, !row.archived)
+      setArchiveError(result.ok ? undefined : result.message)
       if (result.ok) void reload(true)
     }, [reload])
 
@@ -237,6 +242,13 @@ export function makeSessionManagerView(t: TFace): () => ReactNS.ReactElement {
         )}
         {preview.phase === 'failed' && (
           <PreviewPane t={t} failed={preview.message} sessionId={preview.sessionId} title={list.phase === 'ready' ? list.rows.find(row => row.sessionId === preview.sessionId)?.title ?? null : null} onClose={() => { setPreview({ phase: 'closed' }) }} />
+        )}
+
+        {archiveError !== undefined && (
+          <div className="sm-note">
+            <span>{t('archiveFailed')}: {archiveError}</span>
+            <Button variant="outline" onClick={() => { setArchiveError(undefined) }}>{t('close')}</Button>
+          </div>
         )}
 
         {del.phase === 'failed' && (

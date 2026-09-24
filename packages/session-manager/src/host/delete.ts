@@ -1,8 +1,8 @@
 /**
  * The session deleter: removes one logical session (and, recursively, its
  * subagent children) across all three durable locations — the JSONL log
- * directory, the projection-cache domain, and workspace accounting (table +
- * archive set).
+ * directory, the projection-cache domain, and workspace accounting
+ * (registry membership + archive set).
  *
  * A session refuses deletion up front on two independent grounds:
  *
@@ -33,6 +33,7 @@
  */
 
 import type { SessionRecord } from '@deepseek-ai/dsh-session-query'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 
 /** Outcome of one deleted identity. */
 export interface DeleteOutcome {
@@ -56,20 +57,28 @@ export interface DeleteHost {
   sessionQuery?: {
     listSessions?(signal?: AbortSignal): Promise<SessionRecord[]>
   }
-  /** ctx.get('storageDomain'): projection-cache + workspace domains. */
+  /** ctx.get('storageDomain'): the projection-cache domain (no public API drops a row). */
   storageDomain?: {
     get(name: string): {
       table(name: string): {
         get(key: string): unknown
-        put(key: string, value: unknown): Promise<unknown>
         delete(key: string): Promise<boolean>
-        entries?(): IterableIterator<[string, unknown]>
-      }
-      global?: {
-        get(): unknown
-        set(value: unknown): Promise<void>
       }
     } | undefined
+  }
+  /**
+   * ctx.get('workspaceRegistry'): workspace accounting and the archive set.
+   * Both are mutated through the registry so its in-memory state stays the
+   * value that was committed — a direct domain write would leave it stale and
+   * a later native write would resurrect the deleted id.
+   */
+  workspaceRegistry?: {
+    archivedSessionIds: readonly SessionId[]
+    list(): ReadonlyArray<{
+      readonly sessionIds: readonly SessionId[]
+      detachSession(sessionId: SessionId): Promise<void>
+    }>
+    unarchiveSession(sessionId: SessionId): Promise<void>
   }
   /** Physical log directory operations (DI seam). */
   logs: {
@@ -91,16 +100,6 @@ export interface DeleteHost {
      */
     claim(sessionId: string): Promise<() => Promise<void>>
   }
-}
-
-/** The minimal record shape the workspace table stores. */
-interface WorkspaceRecordLike {
-  sessionIds?: string[]
-}
-
-/** Minimal archive-set state of the workspace global. */
-interface WorkspaceGlobalLike {
-  archivedSessionIds?: string[]
 }
 
 /** List the corpus once for the recursive family walk. */
@@ -161,53 +160,28 @@ async function stripCache(host: DeleteHost, sessionId: string): Promise<boolean>
   return removed
 }
 
-/** Remove workspace accounting (table + archive set) for every spelling. */
+/** Remove workspace accounting (membership + archive set) through the registry. */
 async function stripWorkspace(host: DeleteHost, sessionId: string): Promise<boolean> {
+  const registry = host.workspaceRegistry
+  if (registry === undefined) return false
+  const variants = idVariants(sessionId)
   let removed = false
   try {
-    const domain = host.storageDomain?.get('workspace')
-    if (domain !== undefined) {
-      const table = domain.table('workspaces')
-      if (table !== undefined) {
-        const variants = idVariants(sessionId)
-        // Snapshot the iterator's pairs before mutating (iteration is a snapshot anyway).
-        for (const [wid, raw] of [...tableEntriesSafe(table)]) {
-          const record = raw as WorkspaceRecordLike | null
-          if (record === null || !Array.isArray(record.sessionIds)) continue
-          const ids = record.sessionIds as unknown[]
-          if (!ids.some(id => variants.includes(String(id)))) continue
-          await table.put(wid, {
-            ...record,
-            sessionIds: ids.filter(id => !variants.includes(String(id))),
-          })
-          removed = true
-        }
-      }
-      const global = domain.global
-      if (global !== undefined) {
-        const state = global.get() as WorkspaceGlobalLike | null
-        const archived = state?.archivedSessionIds
-        if (Array.isArray(archived)) {
-          const variants = idVariants(sessionId)
-          const next = archived.filter(id => !variants.includes(String(id)))
-          if (next.length !== archived.length) {
-            await global.set({ ...(state as Record<string, unknown>), archivedSessionIds: next })
-            removed = true
-          }
-        }
-      }
+    for (const workspace of registry.list()) {
+      // Membership is stored under one spelling; detach it where it stands.
+      const present = variants.find(variant => workspace.sessionIds.some(id => String(id) === variant))
+      if (present === undefined) continue
+      await workspace.detachSession(present as SessionId)
+      removed = true
     }
-  } catch { /* domain closed: nothing to strip */ }
+    // A deleted session must not stay in the archive set either, or the
+    // registry keeps a dangling id. Unarchive is idempotent.
+    if (registry.archivedSessionIds.some(id => variants.includes(String(id)))) {
+      for (const variant of variants) await registry.unarchiveSession(variant as SessionId)
+      removed = true
+    }
+  } catch { /* registry unavailable or closed: nothing to strip */ }
   return removed
-}
-
-function tableEntriesSafe(table: { entries?(): IterableIterator<[string, unknown]> }): Array<[string, unknown]> {
-  if (typeof table.entries !== 'function') return []
-  try {
-    return [...table.entries()]
-  } catch {
-    return []
-  }
 }
 
 /**
