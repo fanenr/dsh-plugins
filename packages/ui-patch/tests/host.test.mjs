@@ -22,7 +22,7 @@ function stubContext() {
 }
 
 test('the host half declares its bundle name', () => {
-  assert.equal(name, 'dsh-chat-width')
+  assert.equal(name, 'dsh-ui-patch')
 })
 
 test('apply opts this entry out of the generated configuration page', () => {

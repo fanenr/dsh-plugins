@@ -1,13 +1,18 @@
-/** Owned stylesheet: the width rules plus the Settings row's chrome. */
+/**
+ * ui-patch — the owned stylesheet.
+ *
+ * One tag carries both the width rules and the Settings row's chrome; the
+ * trailing percentage rule is rewritten in place as the form changes.
+ */
 
-import { WIDTH_RULES, contentWidthRule } from '../shared.ts'
+import { WIDTH_RULES, contentWidthRule } from '../width.ts'
 
 /** Style tag id, stamped onto the owned tag for HMR bookkeeping. */
-export const STYLE_ID = 'dsh-cw-style'
+export const STYLE_ID = 'dsh-ui-patch-style'
 
 /** Row chrome, in the plugin's own class namespace. */
 export const cssText = `
-.dsh_cw_row {
+.dsh_up_row {
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -15,7 +20,7 @@ export const cssText = `
   padding: 16px 0;
   border-bottom: 0.5px solid var(--dsw-alias-border-l2);
 }
-.dsh_cw_rowText {
+.dsh_up_rowText {
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -23,27 +28,27 @@ export const cssText = `
   min-width: 0;
   padding-right: 48px;
 }
-.dsh_cw_title {
+.dsh_up_title {
   font-size: 14px;
   font-weight: 400;
   line-height: 22px;
   color: var(--dsw-alias-label-primary);
 }
-.dsh_cw_desc {
+.dsh_up_desc {
   font-size: 12px;
   font-weight: 400;
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
 }
-.dsh_cw_descBad {
+.dsh_up_descBad {
   color: var(--dsw-alias-state-error-primary);
 }
-.dsh_cw_control {
+.dsh_up_control {
   display: inline-flex;
   align-items: center;
   gap: 8px;
 }
-.dsh_cw_input {
+.dsh_up_input {
   box-sizing: border-box;
   width: 92px;
   height: 36px;
@@ -58,24 +63,24 @@ export const cssText = `
   text-align: center;
   color: var(--dsw-alias-label-primary);
 }
-.dsh_cw_input::placeholder {
+.dsh_up_input::placeholder {
   color: var(--dsw-alias-label-caption);
 }
-.dsh_cw_input:hover:not(:disabled) {
+.dsh_up_input:hover:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover);
 }
-.dsh_cw_input:focus-visible {
+.dsh_up_input:focus-visible {
   outline: 2px solid var(--dsw-alias-brand-primary);
   outline-offset: -2px;
 }
-.dsh_cw_input:disabled {
+.dsh_up_input:disabled {
   cursor: default;
   opacity: 0.6;
 }
-.dsh_cw_inputBad {
+.dsh_up_inputBad {
   border-color: var(--dsw-alias-state-error-primary);
 }
-.dsh_cw_unit {
+.dsh_up_unit {
   font-size: 14px;
   line-height: 22px;
   color: var(--dsw-alias-label-secondary);

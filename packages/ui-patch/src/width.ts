@@ -1,14 +1,12 @@
 /**
- * The plugin's pure core: the width rules the browser half injects, plus the
- * value helpers both halves share. It holds no Schemastery and touches no DOM,
- * so the client bundle inlines only plain data and string helpers and every
- * rule here is unit-testable from the build output.
+ * ui-patch — the conversation width rules.
  *
- * @module dsh-chat-width/shared
+ * Pure: no Schemastery, no DOM. The browser half inlines these when it builds
+ * the owned stylesheet, and every rule here is unit-testable from the build
+ * output.
+ *
+ * @module dsh-ui-patch/width
  */
-
-/** Dictionary namespace owned by this plugin, and the id of its Host entry. */
-export const NS = 'chat-width'
 
 /** Field carrying the transcript content width as a percentage of the column. */
 export const PERCENT_FIELD = 'percent'
@@ -55,11 +53,8 @@ const PREFERENCE_OVERRIDE_RULE = `${ROOT_SELECTOR} {\n  --dsh-chat-user-width: i
 /** The two rules above, in stylesheet order; the percentage rule follows them. */
 export const WIDTH_RULES = `${HANDLE_HIDE_RULE}\n${PREFERENCE_OVERRIDE_RULE}`
 
-/**
- * Durable section as the browser reads it: the `chat-width` profile entry's
- * live Config.
- */
-export interface ChatWidthSettings {
+/** Durable section as the browser reads it: the Host entry's live `Config`. */
+export interface WidthSettings {
   /**
    * Transcript content width as a percentage of the conversation column.
    * Absent means "adaptive": dsh's own clamp decides the width.

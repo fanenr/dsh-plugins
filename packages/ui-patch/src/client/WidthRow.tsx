@@ -6,24 +6,25 @@
 import { useCallback, useState, useSyncExternalStore, type ReactElement } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
-import { NS, PERCENT_FIELD, PERCENT_MAX, PERCENT_MIN, isPercent, type ChatWidthSettings } from '../shared.ts'
+import { NS } from '../shared.ts'
+import { PERCENT_FIELD, PERCENT_MAX, PERCENT_MIN, isPercent, type WidthSettings } from '../width.ts'
 
 /** Injected business face: the shared configuration form for this entry. */
-export interface ChatWidthRowInjected {
-  /** The `chat-width` profile entry's form the row reads and writes. */
-  form: ConfigForm<ChatWidthSettings>
+export interface WidthRowInjected {
+  /** The `ui-patch` profile entry's form the row reads and writes. */
+  form: ConfigForm<WidthSettings>
 }
 
 /** Full component props: runtime share + locale seat + injected face. */
-export type ChatWidthRowProps =
-  PropsRuntime<'settings.general.item'> & PropsLocale<typeof NS> & ChatWidthRowInjected
+export type WidthRowProps =
+  PropsRuntime<'settings.general.item'> & PropsLocale<typeof NS> & WidthRowInjected
 
 /**
  * Render the width row.
  * @param props - composed slot props.
  * @returns the preference row.
  */
-export function ChatWidthRow({ t, form }: ChatWidthRowProps): ReactElement {
+export function WidthRow({ t, form }: WidthRowProps): ReactElement {
   const snapshot = useSyncExternalStore(
     useCallback(listener => form.subscribe(listener), [form]),
     useCallback(() => form.getSnapshot(), [form]),
@@ -52,16 +53,16 @@ export function ChatWidthRow({ t, form }: ChatWidthRowProps): ReactElement {
     : snapshot.status === 'unavailable' ? t('unavailable') : t('desc')
 
   return (
-    <div className="dsh_cw_row">
-      <div className="dsh_cw_rowText">
-        <div className="dsh_cw_title">{t('title')}</div>
-        <div className={`dsh_cw_desc${invalid ? ' dsh_cw_descBad' : ''}`}>{hint}</div>
+    <div className="dsh_up_row">
+      <div className="dsh_up_rowText">
+        <div className="dsh_up_title">{t('title')}</div>
+        <div className={`dsh_up_desc${invalid ? ' dsh_up_descBad' : ''}`}>{hint}</div>
       </div>
-      <div className="dsh_cw_control">
+      <div className="dsh_up_control">
         <input
           type="text"
           inputMode="numeric"
-          className={`dsh_cw_input${invalid ? ' dsh_cw_inputBad' : ''}`}
+          className={`dsh_up_input${invalid ? ' dsh_up_inputBad' : ''}`}
           value={text}
           placeholder={t('auto')}
           aria-label={t('title')}
@@ -74,7 +75,7 @@ export function ChatWidthRow({ t, form }: ChatWidthRowProps): ReactElement {
             else if (event.key === 'Escape') setDraft(undefined)
           }}
         />
-        <span className="dsh_cw_unit">{t('unit')}</span>
+        <span className="dsh_up_unit">{t('unit')}</span>
       </div>
     </div>
   )

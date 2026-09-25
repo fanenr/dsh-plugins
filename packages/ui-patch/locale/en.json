@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "UI patch",
+    "description": "Set the conversation width from Settings, and move an open menu's selection with Ctrl+P / Ctrl+N."
+  }
+}
