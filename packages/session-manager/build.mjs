@@ -9,7 +9,19 @@ execFileSync(tsc, ['-p', 'tsconfig.json'], { stdio: 'inherit' })
 // tsc emits src/client's multi-file JS only for declarations; it is never referenced.
 rmSync('lib/client', { recursive: true, force: true })
 
-const dshExternal = ['@deepseek-ai/cordis', '@deepseek-ai/dsh-*']
+// The browser module table answers exactly these names; a require it cannot
+// answer throws, so nothing else may stay external. Type-only harness imports
+// are erased by tsc and never reach here.
+const external = [
+  '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-client-locale',
+  '@deepseek-ai/dsh-client-ui-primitives',
+  '@deepseek-ai/dsh-client-ui-renderer',
+  '@deepseek-ai/dsh-client-ui-settings',
+  '@deepseek-ai/dsh-client-ui-slots',
+  'react',
+  'react/jsx-runtime',
+]
 
 await build({
   entryPoints: ['src/client/index.ts'],
@@ -20,7 +32,7 @@ await build({
   target: ['es2024'],
   sourcemap: true,
   jsx: 'automatic',
-  external: [...dshExternal, 'react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'scheduler'],
+  external,
   banner: {
     js: "window.__ModuleLoader__.load({ id: 'dsh-session-manager', factory: (require) => { var module = { exports: {} }; var exports = module.exports;",
   },

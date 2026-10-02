@@ -39,10 +39,9 @@ interface WorkspaceRegistryFace {
 }
 
 /**
- * Live projection registry face (`ctx.sessionProjections`). The harness folds
- * `sessionListMetadata` (its own `blank` signal) over every committed event,
- * so this is the supported read for a fact the manager used to recompute from
- * the raw log.
+ * Live projection registry face (`ctx.sessionProjections`): the harness folds
+ * `sessionListMetadata` (its own `blank` signal and prompt time) over every
+ * committed event, so this is the supported read for both per-session facts.
  */
 interface SessionProjectionsFace {
   /** Current folded host state for one registered unit; `undefined` when unregistered. */
@@ -76,40 +75,42 @@ export interface ListedSession {
  * Project one corpus record into the wire row. All reads are guarded; a
  * hostile record degrades cell by cell, never throws.
  * @param record - corpus record (live-preferred by the query).
- * @param agents - live agent registry, when present.
- * @param proj - projection-cache domain, when present.
+ * @param faces - the host faces this projection reads (all optional).
+ * @param lastPromptAt - authoritative activity time: the live projection's
+ *   value for a session this host holds, else the durable cache's.
  * @param archived - archived session id set.
- * @param projectTitles - cwd → workspace title, for the editable group label.
  */
-export function rowOf(
+function project(
   record: SessionRecord,
-  agents: AgentsFace | undefined,
-  proj: StorageDomainFace | undefined,
+  faces: {
+    agents?: AgentsFace
+    proj?: StorageDomainFace
+    projectTitles?: ReadonlyMap<string, string>
+  },
+  lastPromptAt: number | null,
   archived: Set<string>,
-  projectTitles: ReadonlyMap<string, string> | undefined,
 ): ListedSession {
   const header = record.header
   const id = String(header.id)
-  const agent = agents?.get(id)
+  const agent = faces.agents?.get(id)
   const running = agent?.status === 'running'
-  const cacheRecord = projRecord(proj, id)
+  const cacheRecord = projRecord(faces.proj, id)
   const identity = asRecord(cacheRecord?.identity)
-  const createdAt = asNumber(identity?.createdAt) ?? header.createdAt
+  const createdAt = asNumber(identity?.createdAt) ?? asNumber(header.createdAt) ?? 0
   const cwd = header.cwd === undefined || header.cwd === '' ? null : header.cwd
   return {
     sessionId: id,
     title: projTitle(cacheRecord),
-    // Activity time = the projection cache's sessionListMetadata lastPromptAt,
-    // folded like the host sidebar does (Math.max(header.createdAt,
-    // lastPromptAt ?? 0)). The max matters because a fork's inherited events
-    // may carry timestamps older than its new header.createdAt.
-    lastActivity: Math.max(createdAt, projLastActivity(cacheRecord) ?? createdAt),
+    // Folded like the host sidebar does (Math.max(createdAt, lastPromptAt ??
+    // 0)); the max matters because a fork's inherited events may carry
+    // timestamps older than its new header.createdAt.
+    lastActivity: Math.max(createdAt, lastPromptAt ?? createdAt),
     running,
     archived: archived.has(id),
     // Group label is the workspace's editable title when the cwd belongs to a
     // registered workspace; otherwise the directory basename (ungrouped rows
     // whose directory is not a workspace still group by name).
-    project: cwd === null ? null : (projectTitles?.get(cwd) ?? basename(cwd)),
+    project: cwd === null ? null : (faces.projectTitles?.get(cwd) ?? basename(cwd)),
   }
 }
 
@@ -178,7 +179,17 @@ export async function listAll(ctx: Context): Promise<ListedSession[]> {
   return records
     .filter(record => record.header.origin !== 'subagent')
     .filter(record => !isBlankDraft(String(record.header.id), sessions, agents, projections))
-    .map(record => rowOf(record, agents, proj, archived, projectTitles))
+    .map((record) => {
+      const session = sessions?.get(String(record.header.id))
+      const cacheRecord = projRecord(proj, String(record.header.id))
+      // A session this host holds is read live — the durable cache is a
+      // throttled write-behind and would date the row (and its position in the
+      // group) behind the sidebar. Cold rows have only the cache.
+      const lastPromptAt = session === undefined
+        ? projLastActivity(cacheRecord)
+        : liveLastPromptAt(projections, session) ?? projLastActivity(cacheRecord)
+      return project(record, { agents, proj, projectTitles }, lastPromptAt, archived)
+    })
 }
 
 /**
@@ -210,11 +221,20 @@ function isBlankDraft(
 }
 
 /**
- * Read one unit's live state without letting a materialization fault escape.
- * `stateOf` folds the session log, so a session the registry cannot prepare
- * throws; the list must degrade per row (matching this module's guarded-read
- * contract) rather than fail the whole listing.
+ * The live folded `lastPromptAt` for a session this host holds. `stateOf`
+ * folds the session log, so a session the registry cannot prepare throws; the
+ * list must degrade per row (matching this module's guarded-read contract)
+ * rather than fail the whole listing — a null here falls back to the durable
+ * cache row.
  */
+function liveLastPromptAt(
+  projections: SessionProjectionsFace | undefined,
+  session: unknown,
+): number | null {
+  return asNumber(asRecord(stateOfSafe(projections, session))?.lastPromptAt)
+}
+
+/** Read one unit's live state without letting a materialization fault escape. */
 function stateOfSafe(projections: SessionProjectionsFace | undefined, session: unknown): unknown {
   try {
     return projections?.stateOf?.(session, 'sessionListMetadata')
@@ -279,9 +299,11 @@ function contentText(content: unknown, maxChars: number): string[] {
  *     text blocks are projected like handoff L1 (reasoning and tool-call
  *     blocks never surface); a later step of the same turn overwrites the
  *     pending answer, so only the turn's last text-bearing reply is kept;
- *   - turns are committed whole: a turn that does not fit the remaining
- *     budget is dropped rather than split, so a user message never dangles
- *     without its answer.
+ *   - the NEWEST turns win the budget: the conversation is committed from its
+ *     end backwards, whole turns at a time, so the preview answers "what did
+ *     we just talk about" and a turn that does not fit is dropped rather than
+ *     split — a user message never dangles without its answer, nor the
+ *     reverse.
  *
  * Malformed events are skipped whole. Returns the messages plus the distinct
  * event types seen — the client uses that to distinguish "empty
@@ -292,29 +314,22 @@ export function previewOf(
   limit = PREVIEW_MESSAGE_LIMIT,
   maxChars = PREVIEW_TEXT_LIMIT,
 ): { messages: Array<{ role: 'user' | 'assistant'; text: string }>; eventTypes: string[] } {
-  const messages: Array<{ role: 'user' | 'assistant'; text: string }> = []
+  // Complete turns in log order: one human prompt and, when the turn produced
+  // one, its final surfaced answer.
+  const turns: Array<{ user: string | null; assistant: string | null }> = []
   const eventTypes: string[] = []
-  // One in-progress turn: user text + pending final answer. Committed whole.
   let pendingUser: string | null = null
   let pendingAssistant: string | null = null
-  let budgetExhausted = false
 
   const commit = (): void => {
     if (pendingUser === null && pendingAssistant === null) return
-    const room = limit - messages.length
-    if (!budgetExhausted && room >= (pendingUser !== null ? 1 : 0) + (pendingAssistant !== null ? 1 : 0)) {
-      if (pendingUser !== null) messages.push({ role: 'user', text: pendingUser })
-      if (pendingAssistant !== null) messages.push({ role: 'assistant', text: pendingAssistant })
-    } else {
-      budgetExhausted = true
-    }
+    turns.push({ user: pendingUser, assistant: pendingAssistant })
     pendingUser = null
     pendingAssistant = null
   }
 
   for (const event of events) {
     if (eventTypes.length < 12 && !eventTypes.includes(event.type)) eventTypes.push(event.type)
-    if (budgetExhausted) break
     if (event.type === 'turn/end') {
       commit()
       continue
@@ -346,6 +361,17 @@ export function previewOf(
     }
   }
   commit()
+
+  const messages: Array<{ role: 'user' | 'assistant'; text: string }> = []
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const turn = turns[index]
+    const size = (turn.user === null ? 0 : 1) + (turn.assistant === null ? 0 : 1)
+    if (messages.length + size > limit) break
+    messages.unshift(
+      ...(turn.user === null ? [] : [{ role: 'user' as const, text: turn.user }]),
+      ...(turn.assistant === null ? [] : [{ role: 'assistant' as const, text: turn.assistant }]),
+    )
+  }
   return { messages, eventTypes }
 }
 

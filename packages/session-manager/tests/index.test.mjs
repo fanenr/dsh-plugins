@@ -1,33 +1,43 @@
 import { strict as assert } from 'node:assert'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 
 // Tests run against the built artifact so they exercise the shipped module.
 const {
   descendantsOf,
   deleteSession,
-  groupRowsByProject,
-  idVariants,
+  dshHomeRoot,
   findLogDir,
+  groupRowsByProject,
+  logDirName,
   previewOf,
   setArchived,
 } = await import('../lib/index.js')
 
-/** Minimal SessionRecord for the corpus fake. */
+const SESSION_ID = '11111111-1111-4111-8111-111111111111'
+const OTHER_ID = '22222222-2222-4222-8222-222222222222'
+
+/** Minimal SessionRecord for the corpus fake (header.createdAt is required by the harness). */
 function record(id, parent, origin) {
-  return { header: { id, ...(parent === undefined ? {} : { parentSession: parent }), ...(origin === undefined ? {} : { origin }) }, live: false, persisted: true }
+  return { header: { id, createdAt: 1, ...(parent === undefined ? {} : { parentSession: parent }), ...(origin === undefined ? {} : { origin }) }, live: false, persisted: true }
 }
 
-/** In-memory log dir fake. */
-function makeLogs(dirs) {
+/** In-memory log dir fake: `dirs` are full directory paths. */
+function makeLogs(dirs = []) {
   const present = new Set(dirs)
   const removed = []
+  // The corpus and the log directory spell an id the same way; the bare uuid is
+  // accepted too so a test can name either.
+  const bare = id => String(id).replace(/^session-/, '')
   return {
     present,
     removed,
     findDir(id) {
-      const variants = idVariants(id)
       for (const dir of present) {
-        if (variants.includes(dir.split('/').pop())) return dir
+        if (bare(dir.split('/').pop()) === bare(id)) return dir
       }
       return null
     },
@@ -35,11 +45,19 @@ function makeLogs(dirs) {
       if (!present.delete(dir)) throw new Error(`missing dir ${dir}`)
       removed.push(dir)
     },
+    exists: dir => present.has(dir),
   }
 }
 
+/** The `logs` facade a DeleteHost takes. */
+const logsFace = logs => ({
+  findDir: logs.findDir.bind(logs),
+  removeDir: logs.removeDir.bind(logs),
+  exists: logs.exists.bind(logs),
+})
+
 /** In-memory table fake. */
-function makeTable(rows) {
+function makeTable(rows = {}) {
   const map = new Map(Object.entries(rows))
   return {
     get: key => map.get(key),
@@ -50,9 +68,13 @@ function makeTable(rows) {
   }
 }
 
-/** Build a fake workspace registry: `workspaces` is `{ id: sessionIds }`, `archived` the archive set. */
-function makeRegistry(workspaces = {}, archived = []) {
+/**
+ * Build a fake workspace registry: `workspaces` is `{ id: sessionIds }`,
+ * `archived` / `pinned` the registry-global sets.
+ */
+function makeRegistry(workspaces = {}, archived = [], pinned = []) {
   const archivedSet = new Set(archived)
+  const pinnedSet = new Set(pinned)
   const entities = Object.entries(workspaces).map(([id, sessionIds]) => ({
     id,
     sessionIds: [...sessionIds],
@@ -63,11 +85,39 @@ function makeRegistry(workspaces = {}, archived = []) {
   return {
     entities,
     archivedSet,
+    pinnedSet,
     get archivedSessionIds() { return [...archivedSet] },
+    get pinnedSessionIds() { return [...pinnedSet] },
     list: () => entities,
     async unarchiveSession(sessionId) { archivedSet.delete(sessionId) },
+    async unpinSession(sessionId) { pinnedSet.delete(sessionId) },
   }
 }
+
+test('dshHomeRoot resolves through the harness resolver the boot half publishes', () => {
+  const ctx = { get: name => (name === 'dshHomePath' ? (...segments) => ['/custom/home', ...segments].join('/') : undefined) }
+  assert.equal(dshHomeRoot(ctx, 'sessions'), '/custom/home/sessions')
+})
+
+test('dshHomeRoot falls back to $DSH_HOME when the host publishes no resolver', () => {
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = '/from-env'
+  try {
+    assert.equal(dshHomeRoot({ get: () => undefined }, 'sessions'), '/from-env/sessions')
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+  }
+})
+
+test('logDirName encodes exactly what the persistence backend writes', () => {
+  assert.equal(logDirName(SESSION_ID), SESSION_ID)
+  // Custom ids are legitimate session ids; unsafe code units take the
+  // backend's `~XXXX` escape instead of being rejected.
+  assert.equal(logDirName('webhook-3f2b'), 'webhook-3f2b')
+  assert.equal(logDirName('agent/one'), 'agent~002Fone')
+  assert.equal(logDirName('..'), '~002E~002E')
+})
 
 test('descendantsOf collects a root with no children', () => {
   const records = [record('a'), record('b')]
@@ -97,66 +147,109 @@ test('descendantsOf never collects fork children (independent top-level sessions
   assert.deepStrictEqual(new Set(ids), new Set(['root', 'sub']))
 })
 
-test('deleteSession refuses an invalid id', async () => {
-  const host = { logs: makeLogs([]) }
-  await assert.rejects(() => deleteSession(host, 'not-a-uuid'), /invalid session id/)
+test('deleteSession refuses an id that could name a sibling of the session directory', async () => {
+  const host = { logs: logsFace(makeLogs()) }
+  for (const id of ['', '.', '..', 'session.lock', 'x'.repeat(201)]) {
+    await assert.rejects(() => deleteSession(host, id), /invalid session id/)
+  }
 })
 
 test('deleteSession removes log, cache and workspace rows', async () => {
-  const logs = makeLogs(['/root/bucket-a/session-11111111-1111-4111-8111-111111111111'])
-  const cache = makeTable({
-    'session-11111111-1111-4111-8111-111111111111': { identity: {} },
-  })
+  const logs = makeLogs([`/root/bucket-a/session-${SESSION_ID}`])
+  const cache = makeTable({ [`session-${SESSION_ID}`]: { identity: {} } })
   const registry = makeRegistry(
-    { w1: ['11111111-1111-4111-8111-111111111111', 'other'] },
-    ['11111111-1111-4111-8111-111111111111'],
+    { w1: [`session-${SESSION_ID}`, 'other'] },
+    [`session-${SESSION_ID}`],
   )
   const host = {
-    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
+    logs: logsFace(logs),
     sessions: { get: () => undefined },
-    sessionQuery: { listSessions: async () => [record('11111111-1111-4111-8111-111111111111')] },
+    sessionQuery: { listSessions: async () => [record(`session-${SESSION_ID}`)] },
     storageDomain: { get: name => name === 'session_projcache' ? { table: () => cache } : undefined },
     workspaceRegistry: registry,
   }
-  const outcomes = await deleteSession(host, '11111111-1111-4111-8111-111111111111')
-  assert.deepStrictEqual(outcomes, [{
-    sessionId: '11111111-1111-4111-8111-111111111111',
-    logRemoved: true,
-    cacheRemoved: true,
-    workspaceRemoved: true,
-  }])
+  const outcomes = await deleteSession(host, `session-${SESSION_ID}`)
+  assert.deepStrictEqual(outcomes, [{ sessionId: `session-${SESSION_ID}` }])
   assert.strictEqual(cache.map.size, 0)
   assert.deepStrictEqual(registry.entities[0].sessionIds, ['other'])
   assert.deepStrictEqual([...registry.archivedSet], [])
   assert.strictEqual(logs.removed.length, 1)
 })
 
-test('deleteSession drops a dangling archive entry for a session with no membership', async () => {
-  // An archived session keeps no workspace membership in some layouts; the
-  // archive entry must still go, and the delete must report the cleanup.
-  const logs = makeLogs(['/root/bucket-a/session-44444444-4444-4444-8444-444444444444'])
-  const registry = makeRegistry({}, ['44444444-4444-4444-8444-444444444444'])
+test('deleteSession needs no accounting to delete a session nothing else knows about', async () => {
+  const logs = makeLogs([`/root/bucket-a/session-${SESSION_ID}`])
   const host = {
-    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
+    logs: logsFace(logs),
     sessions: { get: () => undefined },
-    sessionQuery: { listSessions: async () => [record('44444444-4444-4444-8444-444444444444')] },
+    sessionQuery: { listSessions: async () => [record(`session-${SESSION_ID}`)] },
+  }
+  const outcomes = await deleteSession(host, `session-${SESSION_ID}`)
+  assert.deepStrictEqual(outcomes, [{ sessionId: `session-${SESSION_ID}` }])
+  assert.strictEqual(logs.removed.length, 1)
+})
+
+test('deleteSession drops a dangling archive entry for a session with no membership', async () => {
+  // An archived session keeps its accounting slot only while the id is still
+  // indexed; a dangling archive entry must still go.
+  const logs = makeLogs([`/root/bucket-a/session-${OTHER_ID}`])
+  const registry = makeRegistry({}, [`session-${OTHER_ID}`])
+  const host = {
+    logs: logsFace(logs),
+    sessions: { get: () => undefined },
+    sessionQuery: { listSessions: async () => [record(`session-${OTHER_ID}`)] },
     workspaceRegistry: registry,
   }
-  const outcomes = await deleteSession(host, '44444444-4444-4444-8444-444444444444')
-  assert.strictEqual(outcomes[0].workspaceRemoved, true)
+  await deleteSession(host, `session-${OTHER_ID}`)
   assert.deepStrictEqual([...registry.archivedSet], [])
 })
 
-test('deleteSession fails before accounting when the log directory is missing', async () => {
-  const cache = makeTable({ 'session-22222222-2222-4222-8222-222222222222': { identity: {} } })
+test('deleteSession drops the pin of a deleted session', async () => {
+  // The registry never prunes its pin set on its own, and the sidebar keeps a
+  // pin slot for every pinned id, so a deleted pin would leave a ghost row.
+  const logs = makeLogs([`/root/bucket-a/session-${OTHER_ID}`])
+  const registry = makeRegistry({}, [], [`session-${OTHER_ID}`, 'session-keep'])
   const host = {
-    logs: makeLogs([]),
+    logs: logsFace(logs),
     sessions: { get: () => undefined },
-    sessionQuery: { listSessions: async () => [record('22222222-2222-4222-8222-222222222222')] },
+    sessionQuery: { listSessions: async () => [record(`session-${OTHER_ID}`)] },
+    workspaceRegistry: registry,
+  }
+  await deleteSession(host, `session-${OTHER_ID}`)
+  assert.deepStrictEqual([...registry.pinnedSet], ['session-keep'])
+})
+
+test('deleteSession refuses an invalid id before touching anything', async () => {
+  const logs = makeLogs([`/root/bucket-a/session-${SESSION_ID}`])
+  const host = { logs: logsFace(logs) }
+  await assert.rejects(() => deleteSession(host, '..'), /invalid session id/)
+  assert.strictEqual(logs.removed.length, 0)
+})
+
+test('deleteSession deletes a custom (non-uuid) session id', async () => {
+  // Webhook and configured-agent sessions carry ids like `webhook-<uuid>` or
+  // `<agent>-session-<uuid>` and are listed by the manager like any other.
+  const id = 'webhook-2f1c9d4e'
+  const logs = makeLogs([`/root/bucket-a/${id}`])
+  const host = {
+    logs: logsFace(logs),
+    sessions: { get: () => undefined },
+    sessionQuery: { listSessions: async () => [record(id)] },
+  }
+  const [outcome] = await deleteSession(host, id)
+  assert.strictEqual(outcome.sessionId, id)
+  assert.strictEqual(logs.removed.length, 1)
+})
+
+test('deleteSession fails before accounting when the log directory is missing', async () => {
+  const cache = makeTable({ [`session-${OTHER_ID}`]: { identity: {} } })
+  const host = {
+    logs: logsFace(makeLogs()),
+    sessions: { get: () => undefined },
+    sessionQuery: { listSessions: async () => [record(`session-${OTHER_ID}`)] },
     storageDomain: { get: name => name === 'session_projcache' ? { table: () => cache } : undefined },
   }
   await assert.rejects(
-    () => deleteSession(host, '22222222-2222-4222-8222-222222222222'),
+    () => deleteSession(host, `session-${OTHER_ID}`),
     /refusing a half-delete/,
   )
   // Cache row must survive the aborted delete.
@@ -164,16 +257,17 @@ test('deleteSession fails before accounting when the log directory is missing', 
 })
 
 test('deleteSession refuses a session that is live in the host, before any removal', async () => {
-  const logs = makeLogs(['/root/session-33333333-3333-4333-8333-333333333333'])
+  const id = '33333333-3333-4333-8333-333333333333'
+  const logs = makeLogs([`/root/session-${id}`])
   const cache = makeTable({})
   const host = {
-    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
-    sessions: { get: id => id === '33333333-3333-4333-8333-333333333333' ? {} : undefined },
-    sessionQuery: { listSessions: async () => [record('33333333-3333-4333-8333-333333333333')] },
+    logs: logsFace(logs),
+    sessions: { get: key => key === id ? {} : undefined },
+    sessionQuery: { listSessions: async () => [record(id)] },
     storageDomain: { get: name => name === 'session_projcache' ? { table: () => cache } : undefined },
   }
   await assert.rejects(
-    () => deleteSession(host, '33333333-3333-4333-8333-333333333333'),
+    () => deleteSession(host, id),
     // The refusal must name the only thing that works — restarting the host.
     // No RPC, button, or setting can stop a live session.
     /is live in this host .*restart dsh web/,
@@ -186,7 +280,7 @@ test('deleteSession refuses a session that is live in the host, before any remov
 test('deleteSession distinguishes a running session from an idle-but-live one', async () => {
   const id = '33333333-3333-4333-8333-333333333333'
   const make = agents => ({
-    logs: makeLogs([`/root/session-${id}`]),
+    logs: logsFace(makeLogs([`/root/session-${id}`])),
     sessions: { get: key => (key === id ? {} : undefined) },
     agents,
     sessionQuery: { listSessions: async () => [record(id)] },
@@ -209,7 +303,7 @@ test('deleteSession refuses when a descendant subagent is live in the host', asy
     '/root/session-55555555-5555-4555-8555-555555555555',
   ])
   const host = {
-    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
+    logs: logsFace(logs),
     sessions: { get: id => id === '55555555-5555-4555-8555-555555555555' ? {} : undefined },
     sessionQuery: { listSessions: async () => [
       record('44444444-4444-4444-8444-444444444444'),
@@ -230,7 +324,7 @@ test('deleteSession claims the write lease across the whole family and releases 
   const claimed = []
   const released = []
   const host = {
-    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
+    logs: logsFace(logs),
     sessions: { get: () => undefined },
     sessionQuery: { listSessions: async () => [record(root), record(child, root, 'subagent')] },
     writeLease: {
@@ -249,7 +343,7 @@ test('deleteSession aborts before removal when another process holds the lease',
   const logs = makeLogs([`/root/session-${id}`])
   const released = []
   const host = {
-    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
+    logs: logsFace(logs),
     sessions: { get: () => undefined },
     sessionQuery: { listSessions: async () => [record(id)] },
     writeLease: {
@@ -271,14 +365,14 @@ test('deleteSession aborts before removal when another process holds the lease',
 })
 
 test('deleteSession still deletes when the log is corrupt (non-ownership claim failure)', async () => {
-  // A corrupt log is exactly what a user needs to delete. The backend parses
-  // the artifact only AFTER taking the kernel lock, so a corruption failure
+  // A corrupt log is exactly what a user needs to delete. The backend takes
+  // the kernel lock before it parses the artifact, so a corruption failure
   // also proves no other process holds it: the walk must proceed without a
   // lease rather than refusing on the backend's parse error.
   const id = 'eeeeeeee-1111-4111-8111-eeeeeeeeeeee'
   const logs = makeLogs([`/root/session-${id}`])
   const host = {
-    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
+    logs: logsFace(logs),
     sessions: { get: () => undefined },
     sessionQuery: { listSessions: async () => [record(id)] },
     writeLease: {
@@ -300,12 +394,12 @@ test('deleteSession unwinds earlier claims when a later family member is leased 
   const logs = makeLogs([`/root/session-${root}`, `/root/session-${child}`])
   const released = []
   const host = {
-    logs: { findDir: logs.findDir.bind(logs), removeDir: logs.removeDir.bind(logs) },
+    logs: logsFace(logs),
     sessions: { get: () => undefined },
     sessionQuery: { listSessions: async () => [record(root), record(child, root, 'subagent')] },
     writeLease: {
       claim: async (id) => {
-        if (id === child) { const e = new Error("already owned"); e.name = "SessionAlreadyOwnedError"; throw e }
+        if (id === child) { const e = new Error('already owned'); e.name = 'SessionAlreadyOwnedError'; throw e }
         return async () => { released.push(id) }
       },
     },
@@ -320,7 +414,7 @@ test('deleteSession proceeds when a claim reports the log is already absent', as
   // refusal, so the claim step must not pre-empt it with a confusing lease error.
   const id = 'dddddddd-1111-4111-8111-dddddddddddd'
   const host = {
-    logs: makeLogs([]),
+    logs: logsFace(makeLogs()),
     sessions: { get: () => undefined },
     sessionQuery: { listSessions: async () => [record(id)] },
     writeLease: {
@@ -334,14 +428,48 @@ test('deleteSession proceeds when a claim reports the log is already absent', as
   await assert.rejects(() => deleteSession(host, id), /has no log directory; refusing a half-delete/)
 })
 
-test('findLogDir scans buckets for both id spellings', () => {
+test('deleteSession asks the work owners to stop before the files go', async () => {
+  const id = 'abababab-1111-4111-8111-abababababab'
+  const logs = makeLogs([`/root/session-${id}`])
+  const stopped = []
+  const host = {
+    logs: logsFace(logs),
+    sessions: { get: () => undefined },
+    sessionQuery: { listSessions: async () => [record(id)] },
+    stopActivity: {
+      request: async (sessionId) => {
+        // The order matters: reminders must be cancelled while the session is
+        // still deletable, and the fan-out must precede removal.
+        assert.strictEqual(logs.removed.length, 0, 'stop must precede removal')
+        stopped.push(sessionId)
+      },
+    },
+  }
+  await deleteSession(host, id)
+  assert.deepStrictEqual(stopped, [id])
+})
+
+test('deleteSession deletes anyway when a work owner refuses to stop', async () => {
+  const id = 'acacacac-1111-4111-8111-acacacacacac'
+  const logs = makeLogs([`/root/session-${id}`])
+  const host = {
+    logs: logsFace(logs),
+    sessions: { get: () => undefined },
+    sessionQuery: { listSessions: async () => [record(id)] },
+    stopActivity: { request: async () => { throw new Error('provider exploded') } },
+  }
+  const outcomes = await deleteSession(host, id)
+  assert.deepStrictEqual(outcomes, [{ sessionId: id }])
+  assert.strictEqual(logs.removed.length, 1)
+})
+
+test('findLogDir matches the backend directory name in any bucket', () => {
   const logs = {
     buckets: () => ['/root/bucket-a', '/root/bucket-b'],
-    exists: path => path === '/root/bucket-b/session-55555555-5555-4555-8555-555555555555',
+    exists: path => path === `/root/bucket-b/session-${OTHER_ID}`,
     rm: () => {},
   }
-  const found = findLogDir(logs, '55555555-5555-4555-8555-555555555555')
-  assert.strictEqual(found, '/root/bucket-b/session-55555555-5555-4555-8555-555555555555')
+  assert.strictEqual(findLogDir(logs, `session-${OTHER_ID}`), `/root/bucket-b/session-${OTHER_ID}`)
 })
 
 test('findLogDir returns null when nothing matches', () => {
@@ -350,18 +478,7 @@ test('findLogDir returns null when nothing matches', () => {
     exists: () => false,
     rm: () => {},
   }
-  assert.strictEqual(findLogDir(logs, '66666666-6666-4666-8666-666666666666'), null)
-})
-
-test('idVariants produces both spellings', () => {
-  assert.deepStrictEqual(idVariants('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'), [
-    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-    'session-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-  ])
-  assert.deepStrictEqual(idVariants('session-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'), [
-    'session-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-  ])
+  assert.strictEqual(findLogDir(logs, SESSION_ID), null)
 })
 
 test('groupRowsByProject groups by project and sorts alphabetically', () => {
@@ -377,6 +494,19 @@ test('groupRowsByProject groups by project and sorts alphabetically', () => {
   assert.deepStrictEqual(groups[0].rows.map(r => r.sessionId), ['b'])
   assert.deepStrictEqual(groups[2].rows.map(r => r.sessionId), ['a', 'e'])
   assert.deepStrictEqual(groups[3].rows.map(r => r.sessionId), ['d'])
+})
+
+test('groupRowsByProject sorts unarchived first then by activity within a group', () => {
+  const row = (id, project, archived, lastActivity) => ({ sessionId: id, project, title: null, lastActivity, running: false, archived })
+  const groups = groupRowsByProject([
+    row('old-arch', 'p', true, 300),
+    row('new-arch', 'p', true, 900),
+    row('mid', 'p', false, 500),
+    row('newest', 'p', false, 1000),
+    row('oldest', 'p', false, 100),
+  ])
+  const [group] = groups
+  assert.deepStrictEqual(group.rows.map(r => r.sessionId), ['newest', 'mid', 'oldest', 'new-arch', 'old-arch'])
 })
 
 test('previewOf keeps real user text and only the final surfaced assistant answer per turn', () => {
@@ -440,6 +570,42 @@ test('previewOf surfaces a trailing user turn without an answer', () => {
   ])
 })
 
+test('previewOf keeps the NEWEST turns when the budget cannot hold them all', () => {
+  // A preview answers "what did we just talk about", so the tail is what
+  // survives; the oldest turns are the ones dropped.
+  const um = (text) => ({ type: 'user/message', data: { content: [{ type: 'text', text }], source: { kind: 'user', rpcId: 'r' } } })
+  const am = (text) => ({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text }] } } })
+  const events = []
+  for (let turn = 1; turn <= 6; turn++) {
+    events.push(um(`q${turn}`), am(`a${turn}`), { type: 'turn/end', data: { turn } })
+  }
+  const result = previewOf(events, 5)
+  assert.deepStrictEqual(result.messages, [
+    { role: 'user', text: 'q5' },
+    { role: 'assistant', text: 'a5' },
+    { role: 'user', text: 'q6' },
+    { role: 'assistant', text: 'a6' },
+  ], 'the newest whole turns win the budget')
+})
+
+test('previewOf never splits a turn at the budget edge', () => {
+  const um = (text) => ({ type: 'user/message', data: { content: [{ type: 'text', text }], source: { kind: 'user', rpcId: 'r' } } })
+  const am = (text) => ({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text }] } } })
+  const events = [
+    um('q1'), am('a1'), { type: 'turn/end', data: { turn: 1 } },
+    um('q2'), am('a2'), { type: 'turn/end', data: { turn: 2 } },
+  ]
+  // Three slots cannot hold two two-message turns: the newest whole turn wins
+  // the budget, and the older one is dropped rather than split in half.
+  const odd = previewOf(events, 3)
+  assert.deepStrictEqual(odd.messages, [
+    { role: 'user', text: 'q2' },
+    { role: 'assistant', text: 'a2' },
+  ])
+  const single = previewOf(events, 1)
+  assert.deepStrictEqual(single.messages, [], 'a lone slot fits no whole turn')
+})
+
 test('previewOf filters bare {kind:user} task instructions (subagent delegation)', () => {
   const result = previewOf([
     { type: 'user/message', data: { content: [{ type: 'text', text: 'You are a map-data agent. Your task: …' }], source: { kind: 'user' } } },
@@ -453,18 +619,40 @@ test('previewOf filters bare {kind:user} task instructions (subagent delegation)
   ])
 })
 
-test('groupRowsByProject sorts unarchived first then by activity within a group', () => {
-  const row = (id, project, archived, lastActivity) => ({ sessionId: id, project, title: null, lastActivity, running: false, archived })
-  const groups = groupRowsByProject([
-    row('old-arch', 'p', true, 300),
-    row('new-arch', 'p', true, 900),
-    row('mid', 'p', false, 500),
-    row('newest', 'p', false, 1000),
-    row('oldest', 'p', false, 100),
-  ])
-  const [group] = groups
-  assert.deepStrictEqual(group.rows.map(r => r.sessionId), ['newest', 'mid', 'oldest', 'new-arch', 'old-arch'])
-})
+/**
+ * Build the ctx a Host route mount needs, with `list`-endpoint data fakes.
+ * `services` supplies the host faces the list projection reads.
+ */
+function routeCtx(services = {}) {
+  const registered = []
+  const connection = { fetch: { register: route => { registered.push(route); return async () => {} } } }
+  const ctx = {
+    // The route mounts through `ctx.inject(['connection'], ...)`; the injected
+    // context must resolve `connection` exactly as the host's does.
+    inject: (_services, cb) => cb({
+      get: name => (name === 'connection' ? connection : undefined),
+      effect: fn => { fn(); return () => {} },
+    }),
+    get: name => {
+      if (name === 'connection') return connection
+      return services[name]
+    },
+    effect: fn => { fn(); return () => {} },
+    emit: () => {},
+    parallel: async () => {},
+  }
+  return { ctx, registered }
+}
+
+/** Call one endpoint through the registered route and return its envelope. */
+async function callRoute(route, endpoint, payload = {}) {
+  const response = await route.fetch(new Request('http://x/api/session-manager', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ endpoint, payload }),
+  }))
+  return response.json()
+}
 
 test('the Host route is an exact /api fetch route, not an rpc.handle channel', async () => {
   // Regression guard for the 0.1.5-alpha.1 transport break: `connection.rpc.handle()`
@@ -477,21 +665,7 @@ test('the Host route is an exact /api fetch route, not an rpc.handle channel', a
   assert.equal(types.ROUTE, '/api/session-manager', 'route must live under the authenticated /api channel')
   assert.equal(types.CHANNEL, undefined, 'the broken rpc channel constant must be gone')
 
-  const registered = []
-  const connection = {
-    fetch: { register: route => { registered.push(route); return async () => {} } },
-    // Present to prove the Host half does NOT reach for the broken verb.
-    rpc: { handle: () => { throw new Error('rpc.handle must not be used') } },
-  }
-  const ctx = {
-    inject: (_services, cb) => cb({
-      get: name => (name === 'connection' ? connection : undefined),
-      effect: fn => { fn(); return () => {} },
-    }),
-    get: name => (name === 'connection' ? connection : undefined),
-    effect: fn => { fn(); return () => {} },
-    emit: () => {},
-  }
+  const { ctx, registered } = routeCtx()
   const { apply } = await import('../lib/index.js')
   apply(ctx)
 
@@ -501,14 +675,8 @@ test('the Host route is an exact /api fetch route, not an rpc.handle channel', a
   assert.equal(registered[0].requestBody, 'buffered')
 
   // The route answers the same { ok, value } / { ok, error } envelope the callers prove.
-  const call = (body) => registered[0].fetch(new Request('http://x/api/session-manager', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  }))
-  const bad = await call({ endpoint: 'nope', payload: {} })
-  assert.equal(bad.status, 200)
-  assert.deepEqual(await bad.json(), {
+  const bad = await callRoute(registered[0], 'nope')
+  assert.deepEqual(bad, {
     ok: false,
     error: { code: 'dsh-session-manager/unknown-endpoint', message: 'unknown endpoint: nope', details: {} },
   })
@@ -520,73 +688,156 @@ test('the Host route is an exact /api fetch route, not an rpc.handle channel', a
 })
 
 /**
- * Drive the `list` endpoint with one live session and a chosen
+ * Drive the `list` endpoint over one live session and a chosen
  * `sessionListMetadata` projection result. `stateOf` may be absent, may
  * return a value, or may throw — every case must degrade to a decision, never
  * a failed listing.
  */
-async function listWithLiveSession({ stateOf, running = false }) {
+async function listRows({ stateOf, running = false }) {
   const id = '77777777-7777-4777-8777-777777777777'
-  const registered = []
-  const connection = { fetch: { register: route => { registered.push(route); return async () => {} } } }
-  const sessionProjections = stateOf === undefined ? undefined : { stateOf }
-  const ctx = {
-    // The route mounts through `ctx.inject(['connection'], ...)`; the injected
-    // context must resolve `connection` exactly as the host's does.
-    inject: (_services, cb) => cb({
-      get: name => (name === 'connection' ? connection : undefined),
-      effect: fn => { fn(); return () => {} },
-    }),
-    get: name => {
-      if (name === 'connection') return connection
-      if (name === 'sessionQuery') return { listSessions: async () => [record(id)] }
-      if (name === 'sessions') return { get: key => (key === id ? { id } : undefined) }
-      if (name === 'agents') return { get: () => ({ status: running ? 'running' : 'idle' }) }
-      if (name === 'sessionProjections') return sessionProjections
-      return undefined
-    },
-    effect: fn => { fn(); return () => {} },
-    emit: () => {},
-  }
+  const { ctx, registered } = routeCtx({
+    sessionQuery: { listSessions: async () => [record(id)] },
+    sessions: { get: key => (key === id ? { id } : undefined) },
+    agents: { get: () => ({ status: running ? 'running' : 'idle' }) },
+    sessionProjections: stateOf === undefined ? undefined : { stateOf },
+  })
   const { apply } = await import('../lib/index.js')
   apply(ctx)
-  const response = await registered[0].fetch(new Request('http://x/api/session-manager', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ endpoint: 'list', payload: {} }),
-  }))
-  const body = await response.json()
+  const body = await callRoute(registered[0], 'list')
   assert.equal(body.ok, true, 'the list endpoint must not fail')
-  return body.value.rows.map(row => row.sessionId)
+  return body.value.rows
 }
 
 test('list hides a blank live draft read from the sessionListMetadata projection', async () => {
   // The harness folds `blank` over the FULL log, so this is the supported
   // signal; the manager must not recompute it from raw events.
-  const ids = await listWithLiveSession({ stateOf: () => ({ blank: true, lastPromptAt: null }) })
-  assert.deepStrictEqual(ids, [], 'a blank draft must be hidden')
+  const rows = await listRows({ stateOf: () => ({ blank: true, lastPromptAt: null }) })
+  assert.deepStrictEqual(rows.map(row => row.sessionId), [], 'a blank draft must be hidden')
 })
 
 test('list keeps a live session whose projection reports blank: false', async () => {
-  const ids = await listWithLiveSession({ stateOf: () => ({ blank: false, lastPromptAt: 1 }) })
-  assert.deepStrictEqual(ids, ['77777777-7777-4777-8777-777777777777'])
+  const rows = await listRows({ stateOf: () => ({ blank: false, lastPromptAt: 1 }) })
+  assert.deepStrictEqual(rows.map(row => row.sessionId), ['77777777-7777-4777-8777-777777777777'])
 })
 
 test('list degrades to visible when the projection service is absent', async () => {
-  const ids = await listWithLiveSession({ stateOf: undefined })
-  assert.deepStrictEqual(ids, ['77777777-7777-4777-8777-777777777777'], 'a missing projection must never hide a real conversation')
+  const rows = await listRows({ stateOf: undefined })
+  assert.deepStrictEqual(rows.map(row => row.sessionId), ['77777777-7777-4777-8777-777777777777'], 'a missing projection must never hide a real conversation')
 })
 
 test('list degrades to visible when the projection read throws or is malformed', async () => {
-  const throwing = await listWithLiveSession({ stateOf: () => { throw new Error('cannot prepare session') } })
-  assert.deepStrictEqual(throwing, ['77777777-7777-4777-8777-777777777777'])
-  const malformed = await listWithLiveSession({ stateOf: () => 'not-an-object' })
-  assert.deepStrictEqual(malformed, ['77777777-7777-4777-8777-777777777777'])
+  const throwing = await listRows({ stateOf: () => { throw new Error('cannot prepare session') } })
+  assert.deepStrictEqual(throwing.map(row => row.sessionId), ['77777777-7777-4777-8777-777777777777'])
+  const malformed = await listRows({ stateOf: () => 'not-an-object' })
+  assert.deepStrictEqual(malformed.map(row => row.sessionId), ['77777777-7777-4777-8777-777777777777'])
 })
 
 test('list keeps a running session even when the projection reports blank', async () => {
-  const ids = await listWithLiveSession({ stateOf: () => ({ blank: true }), running: true })
-  assert.deepStrictEqual(ids, ['77777777-7777-4777-8777-777777777777'])
+  const rows = await listRows({ stateOf: () => ({ blank: true }), running: true })
+  assert.deepStrictEqual(rows.map(row => row.sessionId), ['77777777-7777-4777-8777-777777777777'])
+})
+
+test('list dates a live session from the live fold, not the write-behind cache', async () => {
+  const live = 5_000
+  const stale = 1_000
+  const { ctx, registered } = routeCtx({
+    sessionQuery: { listSessions: async () => [record('77777777-7777-4777-8777-777777777777')] },
+    sessions: { get: () => ({ id: '77777777-7777-4777-8777-777777777777' }) },
+    sessionProjections: { stateOf: () => ({ blank: false, lastPromptAt: live }) },
+    storageDomain: {
+      get: () => ({ table: () => makeTable({ '77777777-7777-4777-8777-777777777777': { rows: { sessionListMetadata: { val: { blank: false, lastPromptAt: stale } } } } }) }),
+    },
+  })
+  const { apply } = await import('../lib/index.js')
+  apply(ctx)
+  const body = await callRoute(registered[0], 'list')
+  assert.equal(body.value.rows[0].lastActivity, live, 'a live row must use the live fold')
+})
+
+test('list falls back to the cache row when a live fold reports no prompt time', async () => {
+  const stale = 1_000
+  const { ctx, registered } = routeCtx({
+    sessionQuery: { listSessions: async () => [record('77777777-7777-4777-8777-777777777777')] },
+    sessions: { get: () => ({ id: '77777777-7777-4777-8777-777777777777' }) },
+    sessionProjections: { stateOf: () => ({ blank: false, lastPromptAt: null }) },
+    storageDomain: {
+      get: () => ({ table: () => makeTable({ '77777777-7777-4777-8777-777777777777': { rows: { sessionListMetadata: { val: { blank: false, lastPromptAt: stale } } } } }) }),
+    },
+  })
+  const { apply } = await import('../lib/index.js')
+  apply(ctx)
+  const body = await callRoute(registered[0], 'list')
+  assert.equal(body.value.rows[0].lastActivity, stale)
+})
+
+test('list keeps forks and hides subagents', async () => {
+  const fork = record('fork-1', 'parent-1')
+  const subagent = record('sub-1', 'fork-1', 'subagent')
+  const top = record('top-1')
+  const { ctx, registered } = routeCtx({
+    sessionQuery: { listSessions: async () => [top, fork, subagent] },
+  })
+  const { apply } = await import('../lib/index.js')
+  apply(ctx)
+  const body = await callRoute(registered[0], 'list')
+  assert.deepStrictEqual(body.value.rows.map(row => row.sessionId).sort(), ['fork-1', 'top-1'])
+  assert.equal(body.value.archiveAvailable, false)
+})
+
+test('the list endpoint serves a fork and hides a subagent, with live activity', async () => {
+  const fork = '14141414-1111-4111-8111-141414141414'
+  const sub = '15151515-1111-4111-8111-151515151515'
+  const top = '16161616-1111-4111-8111-161616161616'
+  const { ctx, registered } = routeCtx({
+    sessionQuery: { listSessions: async () => [record(top), record(fork, top), record(sub, fork, 'subagent')] },
+    sessions: { get: key => (key === fork ? { id: fork } : undefined) },
+    sessionProjections: { stateOf: () => ({ blank: false, lastPromptAt: 4_242 }) },
+    agents: { get: () => undefined },
+  })
+  const { apply } = await import('../lib/index.js')
+  apply(ctx)
+  const body = await callRoute(registered[0], 'list')
+  assert.deepStrictEqual(body.value.rows.map(row => row.sessionId).sort(), [fork, top].sort())
+  assert.equal(body.value.rows.find(row => row.sessionId === fork).lastActivity, 4_242)
+  assert.equal(body.value.archiveAvailable, false)
+})
+
+test('the delete endpoint stops each family member, removes the logs and reports the ids', async () => {
+  const root = `session-12121212-1111-4111-8111-121212121212`
+  const child = `session-13131313-1111-4111-8111-131313131313`
+  const sessionsRoot = await mkdtemp(join(tmpdir(), 'dsh-session-manager-'))
+  const bucket = join(sessionsRoot, '--tmp-project--')
+  await mkdir(join(bucket, root), { recursive: true })
+  await mkdir(join(bucket, child), { recursive: true })
+  await writeFile(join(bucket, root, 'session.v4.jsonl.zstd'), 'log')
+  const stopped = []
+  const emitted = []
+  const cache = makeTable({ [root]: { identity: {} } })
+  const { ctx, registered } = routeCtx({
+    sessionQuery: { listSessions: async () => [record(root), record(child, root, 'subagent')] },
+    sessions: { get: () => undefined },
+    dshHomePath: () => sessionsRoot,
+    storageDomain: { get: () => ({ table: () => cache }) },
+    workspaceRegistry: makeRegistry({ w1: [root] }, [], [root]),
+  })
+  ctx.emit = (event, id) => { emitted.push([event, id]) }
+  ctx.parallel = async (event, payload) => { stopped.push([event, payload.sessionId]) }
+  const { apply } = await import('../lib/index.js')
+  apply(ctx)
+  const body = await callRoute(registered[0], 'delete', { sessionId: root })
+  assert.deepStrictEqual(body.value.outcomes.map(o => o.sessionId), [root, child])
+  assert.deepStrictEqual(stopped, [
+    ['workspace/session-stop', root],
+    ['workspace/session-stop', child],
+  ])
+  assert.deepStrictEqual(emitted, [
+    ['api-session/removed', root],
+    ['api-session/removed', child],
+  ])
+  assert.equal(cache.map.size, 0)
+  assert.deepStrictEqual([...ctx.get('workspaceRegistry').pinnedSet], [])
+  assert.equal(existsSync(join(bucket, root)), false, 'the log directory must be gone')
+  await rm(sessionsRoot, { recursive: true, force: true })
 })
 
 /** Build a ctx serving a fake workspace registry over `archived`, recording calls. */

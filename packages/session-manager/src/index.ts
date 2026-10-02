@@ -14,10 +14,12 @@ import { join } from 'node:path'
 import { existsSync, readdirSync, rmSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+// Type-only: pulls the workspace event declarations (`workspace/session-stop`).
+import type {} from '@deepseek-ai/dsh-workspace'
 import { asRecord, asString } from './host/parsing.ts'
 import { listAll, previewOf, rawEventsOf } from './host/list.ts'
 import { setArchived } from './host/store.ts'
-import { deleteSession, descendantsOf, idVariants, type DeleteHost } from './host/delete.ts'
+import { deleteSession, descendantsOf, logDirName, type DeleteHost } from './host/delete.ts'
 import {
   ROUTE, ENDPOINT,
   type SetArchivedRequest,
@@ -31,19 +33,30 @@ export const name = 'dsh-session-manager'
  *  surface never mounts it. */
 export const inject: string[] = []
 
-export { deleteSession, descendantsOf, idVariants }
+export { deleteSession, descendantsOf, logDirName }
 export { groupRowsByProject } from './shared/group.ts'
 export { previewOf } from './host/list.ts'
 export { setArchived } from './host/store.ts'
 export type { DeleteHost }
 
-/** Resolve the harness home the same way the base bundle does. */
-export function dshHomePath(...segments: string[]): string {
+/** Host context member the boot half provides: the harness's own home resolver. */
+type DshHomePath = (...segments: string[]) => string
+
+/**
+ * Resolve the harness home the way the harness itself does: through the
+ * resolver the boot half publishes on the context, which honors a configured
+ * home, `$DSH_HOME` (whitespace-only counts as unset), tilde expansion, and
+ * normalization. The `$DSH_HOME`-or-`~/.dsh` fallback only covers a context
+ * without that member (a unit test, or a host assembled without app-boot).
+ */
+export function dshHomeRoot(ctx: Context, ...segments: string[]): string {
+  const resolve = ctx.get('dshHomePath') as DshHomePath | undefined
+  if (typeof resolve === 'function') return resolve(...segments)
   const override = process.env.DSH_HOME
-  const root = override !== undefined && override.trim().length > 0
+  const home = override !== undefined && override.trim().length > 0
     ? override
     : join(homedir(), '.dsh')
-  return join(root, ...segments)
+  return join(home, ...segments)
 }
 
 /** Physical log directory facade (node:fs, DI-seamable for tests). */
@@ -55,7 +68,7 @@ export interface LogDirHost {
 }
 
 /** The real filesystem facade over `$DSH_HOME/sessions`. */
-export function nodeLogs(root: string): LogDirHost {
+function nodeLogs(root: string): LogDirHost {
   return {
     buckets: () => {
       try {
@@ -71,20 +84,23 @@ export function nodeLogs(root: string): LogDirHost {
   }
 }
 
-/** Find one session's log directory by scanning project buckets. */
+/**
+ * Find one session's log directory by scanning project buckets. The directory
+ * name is the id's encoded path segment, exactly as the persistence backend
+ * spells it, so a hit can only be this session's own directory.
+ */
 export function findLogDir(logs: LogDirHost, sessionId: string): string | null {
+  const name = logDirName(sessionId)
   for (const bucket of logs.buckets()) {
-    for (const variant of idVariants(sessionId)) {
-      const candidate = join(bucket, variant)
-      if (logs.exists(candidate)) return candidate
-    }
+    const candidate = join(bucket, name)
+    if (logs.exists(candidate)) return candidate
   }
   return null
 }
 
 /** Build the delete host facade from the live ctx. */
 function deleteHostOf(ctx: Context): DeleteHost {
-  const logs = nodeLogs(dshHomePath('sessions'))
+  const logs = nodeLogs(dshHomeRoot(ctx, 'sessions'))
   const sessions = ctx.get('sessions') as { get(id: string): unknown } | undefined
   const agents = ctx.get('agents') as { get(id: string): { status?: string } | undefined } | undefined
   const persistence = ctx.get('sessionPersistence') as {
@@ -96,9 +112,16 @@ function deleteHostOf(ctx: Context): DeleteHost {
     sessionQuery: ctx.get('sessionQuery') as DeleteHost['sessionQuery'],
     storageDomain: ctx.get('storageDomain') as DeleteHost['storageDomain'],
     workspaceRegistry: ctx.get('workspaceRegistry') as DeleteHost['workspaceRegistry'],
+    // The harness's own work-stop seam (`ctx.parallel` in the registry's
+    // archive-with-stop path): it reaches the schedule and job owners that key
+    // their records by session id.
+    stopActivity: {
+      request: sessionId => ctx.parallel('workspace/session-stop', { sessionId: sessionId as SessionId }),
+    },
     logs: {
       findDir: id => findLogDir(logs, id),
       removeDir: dir => logs.rm(dir),
+      exists: dir => logs.exists(dir),
     },
     // `open(..., 'write')` is the harness's own single-writer claim: it takes
     // the same in-process slot `sessionPersistence` routes live events through
@@ -115,17 +138,9 @@ function deleteHostOf(ctx: Context): DeleteHost {
 }
 
 /**
- * Mount the authenticated `/api/session-manager` route on Connection.
- *
- * An exact fetch route, deliberately not `connection.rpc.handle()`: that verb
- * mounts its physical route through `owner.webServer.register(...)`, where
- * `owner` is the connection plugin's own context. Since 0.1.5-alpha.1 that
- * context declares only `credentials`, so the strict `webServer` read throws
- * inside cordis's isolated effect — this plugin activates, the channel never
- * mounts, and every call reaches the static fallback's 405. Exact fetch routes
- * avoid `webServer` entirely while still running behind Connection's
- * Host/Origin fence and browser authentication, and an absent `connection`
- * keeps the route off profiles with no web surface.
+ * Mount the authenticated `/api/session-manager` route on Connection (the
+ * shared wire module owns why it is an exact fetch route). An absent
+ * `connection` keeps the route off profiles with no web surface.
  */
 function watchRoute(ctx: Context): void {
   ctx.inject(['connection'], (c) => {
@@ -143,7 +158,7 @@ function watchRoute(ctx: Context): void {
     if (typeof register !== 'function') return
     const bound = register.bind(connection?.fetch)
 
-    const handler = async (endpoint: string, payload: unknown, _signal: AbortSignal): Promise<unknown> => {
+    const handler = async (endpoint: string, payload: unknown): Promise<unknown> => {
       try {
         switch (endpoint) {
           case ENDPOINT.list: {
@@ -151,7 +166,7 @@ function watchRoute(ctx: Context): void {
             return {
               ok: true,
               value: {
-                rows: rows.map(r => ({ ...r, sessionId: String(r.sessionId) })),
+                rows,
                 archiveAvailable: ctx.get('workspaceRegistry') !== undefined,
               },
             }
@@ -227,11 +242,11 @@ function watchRoute(ctx: Context): void {
           if (endpoint === null) {
             return jsonResponse({ ok: false, error: { code: 'gateway/bad-request', message: 'missing endpoint', details: {} } }, 400)
           }
-          const result = await handler(endpoint, envelope?.payload, request.signal)
+          const result = await handler(endpoint, envelope?.payload)
           return jsonResponse(result, 200)
         },
       })
-      return () => { void unregister() }
+      return () => { unregister().catch(() => { /* route already gone: nothing to release */ }) }
     }, 'dsh-session-manager: api route')
   })
 }

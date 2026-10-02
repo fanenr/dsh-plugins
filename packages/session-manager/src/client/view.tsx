@@ -12,7 +12,7 @@
 
 import type * as ReactNS from 'react'
 import {
-  Button, IconArchiveOutlineRegular, IconBrowseOutlineRegular, IconCloseOutlineRegular, IconFolderOpenOutlineRegular, IconTrashOutlineRegular, Modal,
+  Button, IconArchiveOutlineRegular, IconBrowseOutlineRegular, IconChevronDownOutlineRegular, IconChevronRightOutlineRegular, IconCloseOutlineRegular, IconFolderOpenOutlineRegular, IconTrashOutlineRegular, Modal, relativeTime,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { React } from './react'
 import type { SessionManagerRow } from '../shared/types'
@@ -23,7 +23,7 @@ import {
 import type { SessionManagerKey } from './i18n'
 
 /** Locale binding face the section receives. */
-export type TFace = (key: SessionManagerKey, params?: Record<string, string>) => string
+export type TFace = (key: SessionManagerKey, params?: Record<string, unknown>) => string
 
 /** The page's own state machine. */
 type ListState =
@@ -44,15 +44,14 @@ type DeleteState =
   | { phase: 'running' }
   | { phase: 'failed'; failures: Array<{ id: string; message: string }> }
 
-function relativeTime(ts: number, now: number): string {
-  const delta = Math.max(0, now - ts)
-  const minutes = Math.floor(delta / 60_000)
-  if (minutes < 1) return 'now'
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h`
-  const days = Math.floor(hours / 24)
-  return `${days}d`
+/**
+ * The row's trailing age: the shared `relativeTime` bucket (so this page and
+ * the sidebar date a session the same way) rendered through this plugin's own
+ * dictionary.
+ */
+function ageLabel(t: TFace, lastActivity: number, now: number): string {
+  const { unit, n } = relativeTime(lastActivity, now)
+  return unit === 'now' ? t('time.now') : t(`time.${unit}`, { n })
 }
 
 /**
@@ -66,6 +65,9 @@ export function makeSessionManagerView(t: TFace): () => ReactNS.ReactElement {
     const [del, setDel] = React.useState<DeleteState>({ phase: 'idle' })
     const [confirmIds, setConfirmIds] = React.useState<readonly string[]>([])
     const [selected, setSelected] = React.useState<Set<string>>(new Set())
+    // Group keys whose rows are hidden. A group with no key to name it (no cwd)
+    // is not collapsible, so it never enters this set.
+    const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set())
     const [now, setNow] = React.useState(Date.now())
     // The registry refuses to archive a session with running work (stopping a
     // turn is destructive and needs a confirmation this page does not offer),
@@ -82,6 +84,14 @@ export function makeSessionManagerView(t: TFace): () => ReactNS.ReactElement {
         const next = new Set(prev)
         if (next.has(id)) next.delete(id)
         else next.add(id)
+        return next
+      })
+    }
+    const toggleGroup = (key: string): void => {
+      setCollapsed((prev) => {
+        const next = new Set(prev)
+        if (next.has(key)) next.delete(key)
+        else next.add(key)
         return next
       })
     }
@@ -162,9 +172,19 @@ export function makeSessionManagerView(t: TFace): () => ReactNS.ReactElement {
             : groupRowsByProject(list.rows).map(group => {
               const groupIds = group.rows.map(row => row.sessionId)
               const groupSelected = groupIds.length > 0 && groupIds.every(id => selected.has(id))
+              const groupKey = group.project
+              const isCollapsed = groupKey !== null && collapsed.has(groupKey)
+              // Mouse toggles from anywhere on the head; the arrow is the
+              // focusable control, so the checkbox keeps its own clicks.
+              const toggleIfNotControl = (event: ReactNS.MouseEvent): void => {
+                if (groupKey === null) return
+                const target = event.target as HTMLElement
+                if (target.closest('button, input, label') !== null) return
+                toggleGroup(groupKey)
+              }
               return (
                 <div key={group.project ?? ''} className="sm-group">
-                  <h3 className="sm-group-head">
+                  <h3 className="sm-group-head" onClick={toggleIfNotControl}>
                     <label className="sm-check">
                       <input
                         type="checkbox"
@@ -180,45 +200,59 @@ export function makeSessionManagerView(t: TFace): () => ReactNS.ReactElement {
                         aria-label={`${t('selectAll')} · ${group.project ?? t('ungrouped')}`}
                       />
                     </label>
-                    {group.project ?? t('ungrouped')}
+                    <span className="sm-group-name">{group.project ?? t('ungrouped')}</span>
                     <span className="sm-group-count">{group.rows.length}</span>
+                    {groupKey !== null && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="sm-disclose"
+                        icon={isCollapsed ? <IconChevronRightOutlineRegular /> : <IconChevronDownOutlineRegular />}
+                        aria-expanded={!isCollapsed}
+                        aria-label={`${isCollapsed ? t('expand') : t('collapse')} · ${groupKey}`}
+                        title={isCollapsed ? t('expand') : t('collapse')}
+                        onClick={() => { toggleGroup(groupKey) }}
+                      />
+                    )}
                   </h3>
-                  <table className="sm-table">
-                    <tbody>
-                      {group.rows.map(row => (
-                        <tr key={row.sessionId} className={selected.has(row.sessionId) ? 'sm-row-selected' : undefined}>
-                          <td className="sm-col-check">
-                            <label className="sm-check">
-                              <input type="checkbox" checked={selected.has(row.sessionId)} onChange={() => { toggleOne(row.sessionId) }} aria-label={row.title ?? row.sessionId} />
-                            </label>
-                          </td>
-                          <td className="sm-title-cell">
-                            <span className="sm-title-row">
-                              <span className="sm-title">{row.title ?? row.sessionId}</span>
-                              {row.running && <span className="sm-badge sm-badge-running">{t('running')}</span>}
-                              {row.archived && <span className="sm-badge">{t('archived')}</span>}
-                            </span>
-                            <span className="sm-id">{row.sessionId}</span>
-                          </td>
-                          <td className="sm-col-activity">{relativeTime(row.lastActivity, now)}</td>
-                          <td className="sm-actions sm-col-actions">
-                            <Button variant="ghost" size="sm" icon={<IconBrowseOutlineRegular />} aria-label={t('preview')} title={t('preview')} onClick={() => { void openPreview(row) }} />
-                            {list.archiveAvailable && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                icon={row.archived ? <IconFolderOpenOutlineRegular /> : <IconArchiveOutlineRegular size={16} />}
-                                aria-label={row.archived ? t('unarchive') : t('archive')}
-                                title={row.archived ? t('unarchive') : t('archive')}
-                                onClick={() => { void toggleArchive(row) }}
-                              />
-                            )}
-                            <Button variant="ghost" size="sm" className="sm-delete-btn" icon={<IconTrashOutlineRegular />} aria-label={t('confirmDelete')} title={t('confirmDelete')} onClick={() => { setConfirmIds([row.sessionId]) }} />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  {!isCollapsed && (
+                    <table className="sm-table">
+                      <tbody>
+                        {group.rows.map(row => (
+                          <tr key={row.sessionId} className={selected.has(row.sessionId) ? 'sm-row-selected' : undefined}>
+                            <td className="sm-col-check">
+                              <label className="sm-check">
+                                <input type="checkbox" checked={selected.has(row.sessionId)} onChange={() => { toggleOne(row.sessionId) }} aria-label={row.title ?? row.sessionId} />
+                              </label>
+                            </td>
+                            <td className="sm-title-cell">
+                              <span className="sm-title-row">
+                                <span className="sm-title">{row.title ?? row.sessionId}</span>
+                                {row.running && <span className="sm-badge sm-badge-running">{t('running')}</span>}
+                                {row.archived && <span className="sm-badge">{t('archived')}</span>}
+                              </span>
+                              <span className="sm-id">{row.sessionId}</span>
+                            </td>
+                            <td className="sm-col-activity">{ageLabel(t, row.lastActivity, now)}</td>
+                            <td className="sm-actions sm-col-actions">
+                              <Button variant="ghost" size="sm" icon={<IconBrowseOutlineRegular />} aria-label={t('preview')} title={t('preview')} onClick={() => { void openPreview(row) }} />
+                              {list.archiveAvailable && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  icon={row.archived ? <IconFolderOpenOutlineRegular /> : <IconArchiveOutlineRegular size={16} />}
+                                  aria-label={row.archived ? t('unarchive') : t('archive')}
+                                  title={row.archived ? t('unarchive') : t('archive')}
+                                  onClick={() => { void toggleArchive(row) }}
+                                />
+                              )}
+                              <Button variant="ghost" size="sm" className="sm-delete-btn" icon={<IconTrashOutlineRegular />} aria-label={t('confirmDelete')} title={t('confirmDelete')} onClick={() => { setConfirmIds([row.sessionId]) }} />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
               )
             })
@@ -266,7 +300,7 @@ export function makeSessionManagerView(t: TFace): () => ReactNS.ReactElement {
             closeLabel={t('close')}
             footer={(
               <>
-                <Button variant="outline" autoFocus disabled={del.phase === 'running'} onClick={() => { setConfirmIds([]) }}>{t('cancel')}</Button>
+                <Button variant="outline" data-modal-autofocus disabled={del.phase === 'running'} onClick={() => { setConfirmIds([]) }}>{t('cancel')}</Button>
                 <Button
                   variant="outline"
                   className="sm-delete-confirm"
@@ -317,7 +351,7 @@ function PreviewPane(props: PreviewPaneProps): ReactNS.ReactElement {
           <IconCloseOutlineRegular size={14} />
         </button>
       </div>
-      {props.loading === true && <p className="sm-note">{props.t('retry')}…</p>}
+      {props.loading === true && <p className="sm-note">{props.t('loading')}…</p>}
       {props.failed !== undefined && <p className="sm-note">{props.t('previewFailed')}: {props.failed}</p>}
       {props.messages !== undefined && (
         props.messages.length === 0
@@ -335,8 +369,11 @@ function PreviewPane(props: PreviewPaneProps): ReactNS.ReactElement {
             <div className="sm-preview-body">
               {props.messages.map((message, index) => (
                 <div key={index} className={'sm-msg sm-msg-' + message.role}>
-                  <span className="sm-msg-role">{message.role}</span>
-                  <span className="sm-msg-text">{message.text}</span>
+                  <span className="sm-msg-spine" aria-hidden="true" />
+                  <div className="sm-msg-content">
+                    <span className="sm-msg-role">{message.role === 'user' ? props.t('roleUser') : props.t('roleAssistant')}</span>
+                    <span className="sm-msg-text">{message.text}</span>
+                  </div>
                 </div>
               ))}
             </div>

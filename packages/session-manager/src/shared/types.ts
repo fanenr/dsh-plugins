@@ -43,15 +43,9 @@ export interface SessionPreviewValue {
   eventTypes: string[]
 }
 
-/** One deleted identity plus its outcome. */
+/** One deleted identity. */
 export interface SessionDeleteOutcome {
   sessionId: string
-  /** Log directory removed. */
-  logRemoved: boolean
-  /** Projection-cache row removed. */
-  cacheRemoved: boolean
-  /** Workspace accounting cleaned. */
-  workspaceRemoved: boolean
 }
 
 /** The complete delete response. */

@@ -1,13 +1,9 @@
 /**
  * The client half's bridge to the Host route (`POST /api/session-manager`).
- *
- * Calls ride Connection's authenticated exact fetch route rather than
- * `ctx.connection.rpc.call`: the harness's `connection.rpc.handle()` cannot
- * mount a channel for a third-party plugin on 0.1.5 (it reads `webServer` off
- * the connection plugin's own context, which no longer injects it), so the
- * route keeps the same Host/Origin fence and browser authentication without
- * that broken verb. Responses are re-proved at the boundary: a malformed
- * payload becomes a typed failure, never a half-merged render.
+ * The route is an exact Connection fetch route — the shared wire module owns
+ * why — so a call is plain `fetch` behind Connection's fence, and every
+ * response is re-proved at the boundary: a malformed payload becomes a typed
+ * failure, never a half-merged render.
  *
  * @module dsh-session-manager/client-bridge
  */
@@ -17,6 +13,7 @@ import type {
 } from '../shared/types'
 import { ENDPOINT, ROUTE } from '../shared/types'
 import type { SessionManagerRow } from '../shared/types'
+
 /** Narrow any value to a plain record, or null. */
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

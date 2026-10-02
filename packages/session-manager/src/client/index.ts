@@ -16,7 +16,6 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { adoptStyles, dict, NS } from './i18n'
 import { makeSessionManagerView } from './view'
 
@@ -32,13 +31,16 @@ export const inject = ['slots', 'locale']
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => adoptStyles(PLUGIN_ID), 'dsh-session-manager: stylesheet')
   ctx.effect(() => ctx.locale.register(NS, dict), 'dsh-session-manager: dictionaries')
-  const t = ctx.locale.bind(NS) as TranslateNS<typeof NS>
+  const t = ctx.locale.bind(NS)
 
   const view = makeSessionManagerView(t)
 
   ctx.slots.inject('settings.section', () => {
     return ctx.slots.register(
-      { name: 'settings.section', id: 'session-manager', order: 20, label: () => t('nav'), locale: NS },
+      // After the built-in sections (account -10, general 0, models 10,
+      // plugins 15) and after the agent-preset section at 20, so the order is
+      // decided by this number rather than by activation sequence.
+      { name: 'settings.section', id: 'session-manager', order: 21, label: () => t('nav'), locale: NS },
       view,
     )
   })
