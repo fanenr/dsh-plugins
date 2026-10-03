@@ -1,0 +1,3 @@
+- insert:
+  - id: shell-credentials
+    name: dsh-shell-credentials

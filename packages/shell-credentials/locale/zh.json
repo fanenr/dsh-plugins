@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Shell 凭据",
+    "description": "把导出的凭据转发进 shell 工具调用:dsh 会从子进程环境里剥掉它们。"
+  }
+}

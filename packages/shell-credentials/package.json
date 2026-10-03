@@ -1,0 +1,82 @@
+{
+  "name": "dsh-shell-credentials",
+  "description": "Forward the user's own credential-shaped environment variables (API tokens, keys) into the shell tools.",
+  "icon": "./icon.svg",
+  "type": "module",
+  "version": "0.2.0",
+  "license": "MIT",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon.svg": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "locale",
+    "cordis.patch.yml",
+    "icon.svg",
+    "LICENSE",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "catalog:"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-api-remotes": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-locale": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-shell": "^0.2.0-rc.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "catalog:",
+    "@deepseek-ai/dsh-api-remotes": "catalog:",
+    "@deepseek-ai/dsh-client-locale": "catalog:",
+    "@deepseek-ai/dsh-client-store": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "catalog:",
+    "@deepseek-ai/dsh-client-ui-primitives": "catalog:",
+    "@deepseek-ai/dsh-client-ui-renderer": "catalog:",
+    "@deepseek-ai/dsh-client-ui-settings": "catalog:",
+    "@deepseek-ai/dsh-client-ui-slots": "catalog:",
+    "@deepseek-ai/dsh-shell": "^0.2.0-rc.2",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "esbuild": "catalog:",
+    "lightningcss": "^1.32.0",
+    "react": "catalog:",
+    "typescript": "catalog:"
+  },
+  "private": true
+}

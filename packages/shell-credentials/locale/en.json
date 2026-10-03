@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Shell credentials",
+    "description": "Forward exported credentials into shell tool calls, which dsh strips from child environments."
+  }
+}

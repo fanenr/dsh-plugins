@@ -1,0 +1,112 @@
+/*
+ * This card's own stylesheet, compiled as a CSS Module (hashed class names +
+ * one injected style tag) exactly like a builtin plugin's. Only the tokens the
+ * builtin settings fields use, so the card follows the theme with no colors of
+ * its own; the frame, footer, save button, read-only line and unavailable line
+ * all come from the shared SettingsForm primitive.
+ */
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+/* A card too narrow for two comfortable text columns folds back to one. */
+@media (max-width: 640px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Mirrors the shared settings field: label row, control, hint. */
+.field {
+  display: flex;
+  flex-direction: column;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 22px;
+}
+
+.label {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-primary);
+}
+
+.badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reset {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.reset:hover:not(:disabled) {
+  color: var(--dsw-alias-label-primary);
+}
+
+.reset:disabled {
+  cursor: default;
+}
+
+/*
+ * The field's control. Same border, radius, background and focus treatment as
+ * the shared text input, with the shared input's fixed height relaxed to a
+ * resizable name list.
+ */
+.list {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 96px;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-3);
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--dsw-alias-label-primary);
+  resize: vertical;
+}
+
+.list:focus-visible {
+  outline: none;
+  border-color: var(--dsw-alias-state-business-primary);
+}
+
+.list:disabled {
+  color: var(--dsw-alias-label-tertiary);
+  cursor: default;
+}
+
+.list[aria-invalid='true'] {
+  border-color: var(--dsw-alias-state-error-primary);
+}
+
+.hint,
+.invalid {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.invalid {
+  color: var(--dsw-alias-state-error-primary);
+}
