@@ -1,6 +1,7 @@
 {
   "name": "dsh-ui-patch",
   "description": "Local UI corrections for dsh: replace the conversation width drag handles with a setting, and move an open menu's selection with Ctrl+P / Ctrl+N.",
+  "icon": "./icon.svg",
   "type": "module",
   "version": "0.1.0",
   "license": "MIT",
@@ -17,12 +18,14 @@
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./locale/*.json": "./locale/*.json",
+    "./icon.svg": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
     "locale",
     "cordis.patch.yml",
+    "icon.svg",
     "LICENSE",
     "README.md"
   ],

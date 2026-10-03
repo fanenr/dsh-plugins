@@ -71,56 +71,6 @@ export const cssText = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.dsh_sdm_footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 0 4px;
-  border-top: 0.5px solid var(--dsw-alias-border-l2);
-}
-.dsh_sdm_failed {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--dsw-alias-label-error);
-}
-.dsh_sdm_discard,
-.dsh_sdm_save {
-  appearance: none;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 5px 14px;
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.5;
-  cursor: pointer;
-}
-.dsh_sdm_discard {
-  border-color: var(--dsw-alias-border-l2);
-  background: none;
-  color: var(--dsw-alias-label-secondary);
-}
-.dsh_sdm_discard:hover:not(:disabled) {
-  color: var(--dsw-alias-label-primary);
-  border-color: var(--dsw-alias-label-dimmed);
-}
-.dsh_sdm_save {
-  background: var(--dsw-alias-label-primary);
-  color: var(--dsw-alias-bg-layer-3);
-}
-.dsh_sdm_discard:disabled,
-.dsh_sdm_save:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-.dsh_sdm_discard:focus-visible,
-.dsh_sdm_save:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 1px;
-}
 `
 
 export function adoptStyles(pluginId: string): () => void {

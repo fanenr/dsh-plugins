@@ -1,3 +1,5 @@
+import type { SettingsFormLabels } from '@deepseek-ai/dsh-client-ui-primitives'
+
 export const NS = 'subagent-default-model'
 
 /** Locale key union for the settings card. */
@@ -14,10 +16,10 @@ export const zh = {
   catalogError: '模型目录加载失败：{message}',
   partialFailure: '部分 Provider 加载失败（{providers}），其模型未列出。',
   unavailable: '此命名空间当前不可用（宿主端未装载或仅内存模式）。',
+  readOnly: '本部署的设置为只读。',
   save: '保存',
   saving: '保存中…',
-  discard: '放弃修改',
-  saveError: '本部署没有接受这些值，已保留供你修改。',
+  saveFailed: '本部署没有接受这些值，已保留供你修改。',
 }
 
 /** English dictionary. */
@@ -31,10 +33,21 @@ export const en: typeof zh = {
   catalogError: 'Failed to load model catalog: {message}',
   partialFailure: 'Some providers failed to load ({providers}); their models are not listed.',
   unavailable: 'This namespace is currently unavailable (host half not mounted, or memory-only mode).',
+  readOnly: 'This deployment stores settings read-only.',
   save: 'Save',
   saving: 'Saving…',
-  discard: 'Discard',
-  saveError: 'The deployment did not accept these values; they were left for you to correct.',
+  saveFailed: 'The deployment did not accept these values; they were left for you to correct.',
+}
+
+/** The shared settings form's frame copy, read from this card's dictionary. */
+export function formLabels(t: (key: SubagentDefaultModelKey) => string): SettingsFormLabels {
+  return {
+    save: t('save'),
+    saving: t('saving'),
+    saveFailed: t('saveFailed'),
+    readOnly: t('readOnly'),
+    unavailable: t('unavailable'),
+  }
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {

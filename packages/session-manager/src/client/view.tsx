@@ -10,11 +10,10 @@
  * @module dsh-session-manager/client-view
  */
 
-import type * as ReactNS from 'react'
+import * as React from 'react'
 import {
   Button, IconArchiveOutlineRegular, IconBrowseOutlineRegular, IconChevronDownOutlineRegular, IconChevronRightOutlineRegular, IconCloseOutlineRegular, IconFolderOpenOutlineRegular, IconTrashOutlineRegular, Modal, relativeTime,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import { React } from './react'
 import type { SessionManagerRow } from '../shared/types'
 import { groupRowsByProject } from '../shared/group'
 import {
@@ -58,8 +57,8 @@ function ageLabel(t: TFace, lastActivity: number, now: number): string {
  * The section component. Pure React: every Host interaction goes through the
  * bridge, every state transition is local.
  */
-export function makeSessionManagerView(t: TFace): () => ReactNS.ReactElement {
-  return function SessionManagerView(): ReactNS.ReactElement {
+export function makeSessionManagerView(t: TFace): () => React.ReactElement {
+  return function SessionManagerView(): React.ReactElement {
     const [list, setList] = React.useState<ListState>({ phase: 'loading' })
     const [preview, setPreview] = React.useState<PreviewState>({ phase: 'closed' })
     const [del, setDel] = React.useState<DeleteState>({ phase: 'idle' })
@@ -176,7 +175,7 @@ export function makeSessionManagerView(t: TFace): () => ReactNS.ReactElement {
               const isCollapsed = groupKey !== null && collapsed.has(groupKey)
               // Mouse toggles from anywhere on the head; the arrow is the
               // focusable control, so the checkbox keeps its own clicks.
-              const toggleIfNotControl = (event: ReactNS.MouseEvent): void => {
+              const toggleIfNotControl = (event: React.MouseEvent): void => {
                 if (groupKey === null) return
                 const target = event.target as HTMLElement
                 if (target.closest('button, input, label') !== null) return
@@ -332,7 +331,7 @@ interface PreviewPaneProps {
   onClose: () => void
 }
 
-function PreviewPane(props: PreviewPaneProps): ReactNS.ReactElement {
+function PreviewPane(props: PreviewPaneProps): React.ReactElement {
   return (
     <Modal
       open

@@ -38,7 +38,14 @@ function loadClientBundle() {
 
 /** Stub for the Host-provided externals the bundle requires at runtime. */
 const HOST_MODULES = {
-  '@deepseek-ai/dsh-client-ui-primitives': { Menu: 'Menu', IconChevronDownOutlineRegular: 'IconChevronDownOutlineRegular' },
+  // SettingsForm is a named function so a rendered tree identifies it: React
+  // holds the component reference as the element type, and this is the only
+  // way to tell the shared frame apart from a hand-rolled div.
+  '@deepseek-ai/dsh-client-ui-primitives': {
+    Menu: 'Menu',
+    IconChevronDownOutlineRegular: 'IconChevronDownOutlineRegular',
+    SettingsForm: function SettingsForm() { return null },
+  },
   '@deepseek-ai/dsh-client-ui-slots': {},
   '@deepseek-ai/dsh-client-ui-settings': {},
   '@deepseek-ai/dsh-client-ui-plugin-manager': {},
@@ -175,11 +182,25 @@ test('the page renders its controls without drawing its own card frame', () => {
   assert.equal(page.type, 'div')
   assert.equal(page.props.className, 'dsh_sdm_page')
 
+  // The frame — save control, read-only line, unavailable line — is the shared
+  // settings form's, so the card must not draw its own footer or buttons.
+  const children = Array.isArray(page.props.children) ? page.props.children : [page.props.children]
+  const frame = children.find(child => child && child.type?.name === 'SettingsForm')
+  assert.ok(frame !== undefined, 'the card renders inside the shared SettingsForm')
+  assert.equal(frame.props.state.available, true, 'and tells it the namespace is served')
+  assert.equal(frame.props.state.dirty, false, 'with nothing staged, so the save is blocked')
+  assert.deepEqual(Object.keys(frame.props.labels).sort(), ['readOnly', 'save', 'saveFailed', 'saving', 'unavailable'])
+
+  const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
   // The bundle page draws the title, description, and uninstall chrome itself;
   // a nested frame here would repeat them.
-  const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
   for (const chrome of ['dsh_sdm_card', 'dsh_sdm_header', 'dsh_sdm_name', 'dsh_sdm_pending']) {
     assert.ok(!source.includes(chrome), `the bundle must not style a nested card frame (${chrome})`)
+  }
+  // The hand-rolled footer went with it: styling a save button here would be
+  // the second visual language the frame exists to remove.
+  for (const dead of ['dsh_sdm_footer', 'dsh_sdm_failed', 'dsh_sdm_discard', 'dsh_sdm_save']) {
+    assert.ok(!source.includes(dead), `the shared form owns the footer (${dead} must be gone)`)
   }
 })
 

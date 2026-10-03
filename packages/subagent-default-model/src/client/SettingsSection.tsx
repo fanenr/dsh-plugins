@@ -5,12 +5,13 @@ import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-cli
 // Type-only: pulls the Plugins page's SlotMap merge for the
 // 'plugins.bundle.config' entry this page registers into.
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
-import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  IconChevronDownOutlineRegular, Menu, SettingsForm, type MenuEntry,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ModelCatalog, ModelProviderGroup } from '@deepseek-ai/dsh-api-session-controller/types'
-import { IconChevronDownOutlineRegular, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
-import { NS } from './locales.ts'
+import { formLabels, NS } from './locales.ts'
 import type { SubagentDefaultModelSettings } from './index.ts'
 
 /**
@@ -75,9 +76,12 @@ function modelRowLabel(groups: readonly ModelProviderGroup[], provider: string, 
 export function SubagentModelCard({ t, configForm: form, loadCatalog }: SubagentModelCardProps): ReactElement {
   const [modelOpen, setModelOpen] = useState(false)
   const [effortOpen, setEffortOpen] = useState(false)
+  const [catalog, setCatalog] = useState<CatalogState>({ status: 'loading' })
+  // The write phase, reported to the shared frame so it can label the save
+  // control and show a refused write. The draft itself stays local: it is what
+  // the menus stage, and only an accepted write drops it.
   const [saving, setSaving] = useState(false)
   const [failed, setFailed] = useState(false)
-  const [catalog, setCatalog] = useState<CatalogState>({ status: 'loading' })
 
   const snapshot = useSyncExternalStore(
     useCallback((listener) => form.subscribe(listener), [form]),
@@ -205,11 +209,18 @@ export function SubagentModelCard({ t, configForm: form, loadCatalog }: Subagent
     })
   }
 
-  const save = (): void => {
-    if (!pending || saving) return
+  /**
+   * Write the staged route, reporting the phase the shared frame renders.
+   *
+   * Only an accepted write drops the draft: a refused one leaves the selection
+   * standing so the user can correct it instead of retyping it, while the
+   * mirror stays the source of truth for what is stored.
+   * @returns settlement after the write.
+   */
+  const save = async (): Promise<void> => {
+    if (!pending || !snapshot.writable || saving) return
     const next = draft
     if (next === undefined) return
-    setSaving(true)
     const base = value ?? {}
     const ops: SettingsPathOpView[] = []
     const setField = <K extends keyof SubagentDefaultModelSettings>(field: K, nextValue: SubagentDefaultModelSettings[K]): void => {
@@ -222,22 +233,18 @@ export function SubagentModelCard({ t, configForm: form, loadCatalog }: Subagent
     setField('provider', next.provider ?? '')
     setField('model', next.model ?? '')
     setField('reasoningEffort', next.reasoningEffort ?? '')
-    void form.mutate(ops).then(() => {
-      setDraft(undefined)
-      setFailed(false)
-    }).catch(() => {
+    setSaving(true)
+    try {
+      const accepted = await form.mutate(ops)
+      setFailed(!accepted)
+      if (accepted) setDraft(undefined)
+    } catch (_error) {
       setFailed(true)
-    }).finally(() => {
+    } finally {
       setSaving(false)
-    })
+    }
   }
 
-  const discard = (): void => {
-    setDraft(undefined)
-    setFailed(false)
-  }
-
-  const blocked = !ready || !pending || saving
 
   return (
     <div className="dsh_sdm_page">
@@ -246,7 +253,21 @@ export function SubagentModelCard({ t, configForm: form, loadCatalog }: Subagent
         <p className="dsh_sdm_muted">{t('partialFailure', { providers: failures.map(failure => failure.name).join('、') })}</p>
       )}
 
-      {ready && (
+      <SettingsForm
+        labels={formLabels(t)}
+        state={{
+          available: ready,
+          writable: snapshot.writable,
+          dirty: pending,
+          // A route draft is always a well-formed selection, so the frame own
+          // gates are the only thing that can block this save.
+          invalid: false,
+          saving,
+          failed,
+        }}
+        onSave={() => { void save() }}
+        onDiscard={() => { setDraft(undefined) }}
+      >
         <>
           <div className="dsh_sdm_row">
             <div className="dsh_sdm_rowText">
@@ -313,27 +334,7 @@ export function SubagentModelCard({ t, configForm: form, loadCatalog }: Subagent
             </div>
           )}
         </>
-      )}
-
-      <div className="dsh_sdm_footer">
-        {failed ? <p className="dsh_sdm_failed" role="status">{t('saveError')}</p> : null}
-        <button
-          type="button"
-          className="dsh_sdm_discard"
-          disabled={!pending || saving}
-          onClick={discard}
-        >
-          {t('discard')}
-        </button>
-        <button
-          type="button"
-          className="dsh_sdm_save"
-          disabled={blocked}
-          onClick={save}
-        >
-          {t(saving ? 'saving' : 'save')}
-        </button>
-      </div>
+      </SettingsForm>
     </div>
   )
 }

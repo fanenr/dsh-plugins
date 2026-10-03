@@ -1,6 +1,7 @@
 {
   "name": "dsh-session-manager",
   "description": "Manage every session of this profile from a Settings page: preview conversations, toggle archive, and permanently delete sessions (recursively) through an authenticated Host channel.",
+  "icon": "./icon.svg",
   "type": "module",
   "version": "0.2.0",
   "license": "MIT",
@@ -17,12 +18,14 @@
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./locale/*.json": "./locale/*.json",
+    "./icon.svg": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
     "locale",
     "cordis.patch.yml",
+    "icon.svg",
     "LICENSE",
     "README.md"
   ],
